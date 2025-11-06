@@ -131,6 +131,14 @@ If you encounter API errors:
 2. Verify you have API quota
 3. Check [Google AI Studio](https://aistudio.google.com/) for service status
 
+### Safety Filter Blocks
+If you see warnings about "SAFETY (content blocked by safety filters)":
+- The script already uses permissive safety settings (`BLOCK_ONLY_HIGH`)
+- Some images/videos may still trigger safety filters
+- These examples will be marked as incorrect and logged
+- The script continues processing remaining examples
+- Check the output CSV for which examples were blocked
+
 ## Comparison with Original Code
 
 The Gemini version maintains the same structure as the original:

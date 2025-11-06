@@ -213,13 +213,73 @@ def run_inference_single(model, example, num_video_frames=8):
             max_output_tokens=512,
         )
 
+        # Set safety settings to be less restrictive for benchmark evaluation
+        safety_settings = [
+            {
+                "category": "HARM_CATEGORY_HARASSMENT",
+                "threshold": "BLOCK_ONLY_HIGH"
+            },
+            {
+                "category": "HARM_CATEGORY_HATE_SPEECH",
+                "threshold": "BLOCK_ONLY_HIGH"
+            },
+            {
+                "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                "threshold": "BLOCK_ONLY_HIGH"
+            },
+            {
+                "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+                "threshold": "BLOCK_ONLY_HIGH"
+            }
+        ]
+
         response = model.generate_content(
             content,
-            generation_config=generation_config
+            generation_config=generation_config,
+            safety_settings=safety_settings
         )
 
-        # Extract response text
-        decoded = response.text
+        # Check if response was blocked or had issues
+        if not response.candidates:
+            error_msg = "No candidates returned by Gemini"
+            print(f"\nWarning: {error_msg}")
+            return (None, error_msg, "")
+
+        candidate = response.candidates[0]
+
+        # Check finish reason
+        # finish_reason: 1=STOP (success), 2=MAX_TOKENS, 3=SAFETY, 4=RECITATION, 5=OTHER
+        if candidate.finish_reason != 1:  # Not STOP
+            finish_reason_map = {
+                2: "MAX_TOKENS",
+                3: "SAFETY (content blocked by safety filters)",
+                4: "RECITATION (blocked due to recitation)",
+                5: "OTHER"
+            }
+            reason = finish_reason_map.get(candidate.finish_reason, f"UNKNOWN ({candidate.finish_reason})")
+            error_msg = f"Response blocked or incomplete. Finish reason: {reason}"
+            print(f"\nWarning: {error_msg}")
+
+            # Try to get any partial text if available
+            try:
+                if candidate.content and candidate.content.parts:
+                    partial_text = "".join(part.text for part in candidate.content.parts if hasattr(part, 'text'))
+                    if partial_text:
+                        decoded = partial_text
+                        answer, explanation = parse_model_response(decoded, example['answer_choices'])
+                        return (answer, explanation, decoded)
+            except:
+                pass
+
+            return (None, error_msg, "")
+
+        # Extract response text (only if finish_reason is STOP)
+        try:
+            decoded = response.text
+        except Exception as e:
+            error_msg = f"Failed to extract text: {str(e)}"
+            print(f"\nWarning: {error_msg}")
+            return (None, error_msg, "")
 
         # Parse structured response with validation
         answer, explanation = parse_model_response(decoded, example['answer_choices'])
