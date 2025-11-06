@@ -299,12 +299,33 @@ def run_benchmark(dataset_name, split="test", output_csv="gpt5_vqa_results.csv",
     total = len(all_df)
     acc = correct / total if total else 0
 
+    # Calculate accuracy by question type
+    stats_by_type = {}
+    accuracy_by_type = {}
+
+    if "question_type" in all_df.columns:
+        for q_type in all_df["question_type"].unique():
+            if pd.notna(q_type):
+                type_df = all_df[all_df["question_type"] == q_type]
+                type_correct = type_df["correct"].sum()
+                type_total = len(type_df)
+                stats_by_type[q_type] = {'correct': type_correct, 'total': type_total}
+                accuracy_by_type[q_type] = type_correct / type_total if type_total > 0 else 0
+
     print("\n" + "=" * 80)
     print("GPT-5 BENCHMARK RESULTS (Merged)")
     print("=" * 80)
     print(f"Model: {MODEL_NAME}")
     print(f"Accuracy: {acc:.2%} ({correct}/{total})")
-    print(f"Results saved to: {output_csv}")
+
+    if stats_by_type:
+        print(f"\nAccuracy by Question Type:")
+        for q_type in sorted(stats_by_type.keys()):
+            stats = stats_by_type[q_type]
+            type_acc = accuracy_by_type[q_type]
+            print(f"  {q_type}: {type_acc:.2%} ({stats['correct']}/{stats['total']})")
+
+    print(f"\nResults saved to: {output_csv}")
     print("=" * 80)
 
 
