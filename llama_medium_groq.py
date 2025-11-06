@@ -52,28 +52,6 @@ def initialize_groq_client():
     print("Groq client initialized successfully")
     return client
 
-def infer_media_type(example):
-    """
-    Infer media type from the example if not explicitly provided.
-
-    Args:
-        example: Dataset example
-
-    Returns:
-        'image' or 'video'
-    """
-    # Check if media_type is explicitly provided
-    if 'media_type' in example:
-        return example['media_type']
-
-    # Infer from available fields
-    if 'video' in example and example['video'] is not None:
-        return 'video'
-    elif 'image' in example and example['image'] is not None:
-        return 'image'
-    else:
-        raise ValueError("Cannot determine media type from example. No 'image' or 'video' field found.")
-
 def image_to_base64(image):
     """
     Convert PIL Image to base64 string.
@@ -252,10 +230,9 @@ def run_inference_single(client, example, model_name, num_video_frames=8):
     Returns:
         tuple: (answer, explanation, full_response)
     """
-    try:
-        # Infer media type
-        media_type = infer_media_type(example)
+    media_type = example['media_type']
 
+    try:
         # Prepare media
         frames = None
         if media_type == 'video':
@@ -444,19 +421,19 @@ def run_benchmark(dataset_name, output_file='results_groq.csv', checkpoint_file=
 
             # Store result with all original metadata
             result = {
-                'file_name': example.get('file_name', ''),
-                'source_file': example.get('source_file', ''),
-                'question': example.get('question', ''),
-                'question_type': example.get('question_type', ''),
-                'question_id': example.get('question_id', ''),
-                'answer': example.get('answer', ''),  # Ground truth
-                'answer_choices': str(example.get('answer_choices', [])),  # Convert list to string for CSV
-                'correct_choice_idx': example.get('correct_choice_idx', -1),
+                'file_name': example['file_name'],
+                'source_file': example['source_file'],
+                'question': example['question'],
+                'question_type': example['question_type'],
+                'question_id': example['question_id'],
+                'answer': example['answer'],  # Ground truth
+                'answer_choices': str(example['answer_choices']),  # Convert list to string for CSV
+                'correct_choice_idx': example['correct_choice_idx'],
                 'model': model_name,
                 'model_answer': model_answer if model_answer is not None else 'None',
                 'explanation': explanation,
                 'correct': is_correct,
-                'media_type': infer_media_type(example)
+                'media_type': example['media_type']
             }
             results.append(result)
             processed_indices.add(idx)
@@ -498,10 +475,7 @@ def run_benchmark(dataset_name, output_file='results_groq.csv', checkpoint_file=
     print("="*80)
     print(f"\nModel: {model_name}")
     print(f"Overall Accuracy: {overall_accuracy:.2%} ({correct}/{total})")
-    if total > 0:
-        print(f"Failed to provide valid answer: {failed_answers}/{total} ({failed_answers/total*100:.1f}%)")
-    else:
-        print(f"Failed to provide valid answer: {failed_answers}/{total} (N/A - no examples processed)")
+    print(f"Failed to provide valid answer: {failed_answers}/{total} ({failed_answers/total*100:.1f}%)")
     print(f"\nAccuracy by Question Type:")
     for q_type, acc in accuracy_by_type.items():
         stats = stats_by_type[q_type]
