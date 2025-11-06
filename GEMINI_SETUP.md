@@ -139,6 +139,14 @@ If you see warnings about "SAFETY (content blocked by safety filters)":
 - The script continues processing remaining examples
 - Check the output CSV for which examples were blocked
 
+### MAX_TOKENS Messages
+If you see info messages about "Response reached MAX_TOKENS":
+- The script uses `max_output_tokens=2048` which should be sufficient for most cases
+- MAX_TOKENS means the model's response was cut off due to length
+- The script automatically extracts the answer from partial text when possible
+- Since answers appear on the first line, they're usually captured even if explanation is cut off
+- These are logged as info (not warnings) and will still be evaluated if answer was extracted
+
 ## Comparison with Original Code
 
 The Gemini version maintains the same structure as the original:

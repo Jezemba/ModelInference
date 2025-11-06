@@ -210,7 +210,7 @@ def run_inference_single(model, example, num_video_frames=8):
         # Call Gemini API with generation config for deterministic output
         generation_config = genai.types.GenerationConfig(
             temperature=0.0,  # Deterministic for evaluation
-            max_output_tokens=512,
+            max_output_tokens=2048,  # Increased to handle longer explanations
         )
 
         # Set safety settings to be less restrictive for benchmark evaluation
@@ -257,8 +257,13 @@ def run_inference_single(model, example, num_video_frames=8):
                 5: "OTHER"
             }
             reason = finish_reason_map.get(candidate.finish_reason, f"UNKNOWN ({candidate.finish_reason})")
-            error_msg = f"Response blocked or incomplete. Finish reason: {reason}"
-            print(f"\nWarning: {error_msg}")
+
+            # For MAX_TOKENS, we can still try to use the partial response
+            # since the answer should be on the first line
+            if candidate.finish_reason == 2:  # MAX_TOKENS
+                print(f"\nInfo: Response reached MAX_TOKENS, attempting to extract answer from partial text...")
+            else:
+                print(f"\nWarning: Response blocked or incomplete. Finish reason: {reason}")
 
             # Try to get any partial text if available
             try:
@@ -267,10 +272,15 @@ def run_inference_single(model, example, num_video_frames=8):
                     if partial_text:
                         decoded = partial_text
                         answer, explanation = parse_model_response(decoded, example['answer_choices'])
-                        return (answer, explanation, decoded)
-            except:
-                pass
+                        # For MAX_TOKENS, accept the answer if we got it
+                        if candidate.finish_reason == 2 and answer is not None:
+                            return (answer, explanation, decoded)
+                        elif answer is not None:
+                            return (answer, explanation, decoded)
+            except Exception as inner_e:
+                print(f"\nFailed to extract partial text: {inner_e}")
 
+            error_msg = f"Response blocked or incomplete. Finish reason: {reason}"
             return (None, error_msg, "")
 
         # Extract response text (only if finish_reason is STOP)
