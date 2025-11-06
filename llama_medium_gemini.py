@@ -210,16 +210,86 @@ def run_inference_single(model, example, num_video_frames=8):
         # Call Gemini API with generation config for deterministic output
         generation_config = genai.types.GenerationConfig(
             temperature=0.0,  # Deterministic for evaluation
-            max_output_tokens=512,
+            max_output_tokens=2048,  # Increased to handle longer explanations
         )
+
+        # Set safety settings to be less restrictive for benchmark evaluation
+        safety_settings = [
+            {
+                "category": "HARM_CATEGORY_HARASSMENT",
+                "threshold": "BLOCK_ONLY_HIGH"
+            },
+            {
+                "category": "HARM_CATEGORY_HATE_SPEECH",
+                "threshold": "BLOCK_ONLY_HIGH"
+            },
+            {
+                "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                "threshold": "BLOCK_ONLY_HIGH"
+            },
+            {
+                "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+                "threshold": "BLOCK_ONLY_HIGH"
+            }
+        ]
 
         response = model.generate_content(
             content,
-            generation_config=generation_config
+            generation_config=generation_config,
+            safety_settings=safety_settings
         )
 
-        # Extract response text
-        decoded = response.text
+        # Check if response was blocked or had issues
+        if not response.candidates:
+            error_msg = "No candidates returned by Gemini"
+            print(f"\nWarning: {error_msg}")
+            return (None, error_msg, "")
+
+        candidate = response.candidates[0]
+
+        # Check finish reason
+        # finish_reason: 1=STOP (success), 2=MAX_TOKENS, 3=SAFETY, 4=RECITATION, 5=OTHER
+        if candidate.finish_reason != 1:  # Not STOP
+            finish_reason_map = {
+                2: "MAX_TOKENS",
+                3: "SAFETY (content blocked by safety filters)",
+                4: "RECITATION (blocked due to recitation)",
+                5: "OTHER"
+            }
+            reason = finish_reason_map.get(candidate.finish_reason, f"UNKNOWN ({candidate.finish_reason})")
+
+            # For MAX_TOKENS, we can still try to use the partial response
+            # since the answer should be on the first line
+            if candidate.finish_reason == 2:  # MAX_TOKENS
+                print(f"\nInfo: Response reached MAX_TOKENS, attempting to extract answer from partial text...")
+            else:
+                print(f"\nWarning: Response blocked or incomplete. Finish reason: {reason}")
+
+            # Try to get any partial text if available
+            try:
+                if candidate.content and candidate.content.parts:
+                    partial_text = "".join(part.text for part in candidate.content.parts if hasattr(part, 'text'))
+                    if partial_text:
+                        decoded = partial_text
+                        answer, explanation = parse_model_response(decoded, example['answer_choices'])
+                        # For MAX_TOKENS, accept the answer if we got it
+                        if candidate.finish_reason == 2 and answer is not None:
+                            return (answer, explanation, decoded)
+                        elif answer is not None:
+                            return (answer, explanation, decoded)
+            except Exception as inner_e:
+                print(f"\nFailed to extract partial text: {inner_e}")
+
+            error_msg = f"Response blocked or incomplete. Finish reason: {reason}"
+            return (None, error_msg, "")
+
+        # Extract response text (only if finish_reason is STOP)
+        try:
+            decoded = response.text
+        except Exception as e:
+            error_msg = f"Failed to extract text: {str(e)}"
+            print(f"\nWarning: {error_msg}")
+            return (None, error_msg, "")
 
         # Parse structured response with validation
         answer, explanation = parse_model_response(decoded, example['answer_choices'])
