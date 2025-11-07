@@ -108,6 +108,17 @@ def extract_video_frames(video_path, num_frames=32):
     cap.release()
     return frames
 
+def build_system_prompt():
+    """Build a system prompt to guide the model's behavior"""
+    return (
+        "You are a visual question answering assistant. "
+        "Your task is to answer questions about images accurately and concisely. "
+        "Always follow this format exactly:\n"
+        "- First line: Only the answer (a single letter like A, B, C, D or a word like Yes, No)\n"
+        "- Second line: One brief sentence (10-15 words) explaining your answer\n"
+        "Do not add extra text, formatting, or explanations beyond these two lines."
+    )
+
 def prepare_messages(example, media_type, frames=None):
     """
     Prepare message format for Llama 3.2 Vision model with structured output.
@@ -122,26 +133,32 @@ def prepare_messages(example, media_type, frames=None):
     """
     question = example['question']
     answer_choices = example['answer_choices']
-    
+
     # Build structured prompt
     prompt = f"{question}\n\n"
-    
+
     # Add answer choices
     if answer_choices and len(answer_choices) > 0:
         prompt += "Answer options:\n"
         for choice in answer_choices:
             prompt += f"- {choice}\n"
         prompt += "\n"
-    
+
     # Add instruction for structured response
     prompt += "Instructions:\n"
     prompt += "1. First line: Provide ONLY your answer exactly as it appears in the options above (e.g., 'A', 'Yes', 'X axis', etc.). Do NOT add any other text on this line.\n"
     prompt += "2. Second line onwards: Provide a brief summary (1-2 sentences) explaining your reasoning.\n\n"
     prompt += "Answer:"
-    
-    # Format message based on media type
+
+    # Format message based on media type with system prompt
     if media_type == 'image':
         messages = [
+            {
+                "role": "system",
+                "content": [
+                    {"type": "text", "text": build_system_prompt()}
+                ]
+            },
             {
                 "role": "user",
                 "content": [
@@ -157,14 +174,20 @@ def prepare_messages(example, media_type, frames=None):
         for frame in frames:
             content.append({"type": "image", "image": frame})
         content.append({"type": "text", "text": f"These are {len(frames)} frames from a video showing a sequence. {prompt}"})
-        
+
         messages = [
+            {
+                "role": "system",
+                "content": [
+                    {"type": "text", "text": build_system_prompt()}
+                ]
+            },
             {
                 "role": "user",
                 "content": content
             }
         ]
-    
+
     return messages
 
 def parse_model_response(response_text, answer_choices):
