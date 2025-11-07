@@ -111,12 +111,25 @@ def extract_video_frames(video_path, num_frames=32):
 def build_system_prompt():
     """Build a system prompt to guide the model's behavior"""
     return (
-        "You are a visual question answering assistant. "
-        "Your task is to answer questions about images accurately and concisely. "
-        "Always follow this format exactly:\n"
-        "- First line: Only the answer (a single letter like A, B, C, D or a word like Yes, No)\n"
-        "- Second line: One brief sentence (10-15 words) explaining your answer\n"
-        "Do not add extra text, formatting, or explanations beyond these two lines."
+        "You are a visual question answering assistant. You MUST follow this exact format:\n\n"
+        "FORMAT REQUIREMENTS:\n"
+        "Line 1: ONLY the exact answer from the provided options (nothing else)\n"
+        "Line 2: One brief explanation sentence (10-15 words)\n\n"
+        "CRITICAL RULES:\n"
+        "1. The first line MUST contain ONLY the answer - no other words or phrases\n"
+        "2. The answer MUST exactly match one of the provided options\n"
+        "3. Do NOT start with phrases like 'The answer is' or 'I think'\n"
+        "4. Do NOT add any text before or after the answer on the first line\n\n"
+        "EXAMPLE:\n"
+        "Question: Is the sky blue?\n"
+        "Options: Yes, No\n"
+        "CORRECT format:\n"
+        "Yes\n"
+        "The clear atmosphere scatters blue wavelengths of light more effectively.\n\n"
+        "INCORRECT format:\n"
+        "The answer is Yes\n"
+        "I think the sky appears blue because...\n\n"
+        "Remember: First line = answer only. Second line = brief explanation."
     )
 
 def prepare_messages(example, media_type, frames=None):
