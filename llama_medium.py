@@ -385,11 +385,8 @@ def run_benchmark(dataset_name, output_file='results.csv', checkpoint_file='chec
     # Optional filtering by media type
     if media_type != "all":
         print(f"Filtering dataset for {media_type} examples only...")
-        filtered_indices = [
-            i for i in range(len(dataset))
-            if dataset[i]['media_type'] == media_type
-        ]
-        dataset = dataset.select(filtered_indices)
+        # Use dataset.filter() which only reads the metadata column, not the media content
+        dataset = dataset.filter(lambda example: example['media_type'] == media_type)
         print(f"Remaining examples after filter: {len(dataset)}")
 
     # Initialize model
