@@ -17,6 +17,8 @@ from tqdm import tqdm
 import pickle
 from pathlib import Path
 import google.generativeai as genai
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
 
 def load_benchmark_dataset(dataset_name, split='test'):
     """
@@ -404,7 +406,7 @@ def save_checkpoint(checkpoint_file, processed_indices, results):
         pickle.dump(checkpoint_data, f)
 
 def run_benchmark(dataset_name, output_file='results_gemini.csv', checkpoint_file='checkpoint_gemini.pkl',
-                  model_name="gemini-2.0-flash-exp", num_video_frames=8, media_type="all"):
+                  model_name="gemini-2.0-flash-exp", num_video_frames=8, media_type="all", max_workers=5):
     """
     Run benchmark evaluation on the entire dataset with checkpointing using Gemini API.
 
@@ -414,6 +416,8 @@ def run_benchmark(dataset_name, output_file='results_gemini.csv', checkpoint_fil
         checkpoint_file: Pickle file to save checkpoints
         model_name: Name of the Gemini model to use
         num_video_frames: Number of frames to extract from videos (default: 8)
+        media_type: Filter dataset by media type (image, video, or all)
+        max_workers: Number of concurrent threads for parallel API calls (default: 5)
 
     Returns:
         Dictionary with evaluation metrics
@@ -451,18 +455,22 @@ def run_benchmark(dataset_name, output_file='results_gemini.csv', checkpoint_fil
             if r.get('correct', False):
                 stats_by_type[q_type]['correct'] += 1
 
-    # Process remaining examples one by one
-    print(f"\n🚀 Starting processing with Gemini API...")
+    # Process remaining examples with parallel threads
+    print(f"\n🚀 Starting processing with Gemini API (parallel mode)...")
     print(f"   Model: {model_name}")
     print(f"   Total examples: {len(dataset)}")
     print(f"   Already processed: {len(processed_indices)}")
     print(f"   Remaining: {len(dataset) - len(processed_indices)}")
+    print(f"   Concurrent workers: {max_workers}")
 
     # Get unprocessed indices
     unprocessed_indices = [i for i in range(len(dataset)) if i not in processed_indices]
 
-    # Process one by one
-    for idx in tqdm(unprocessed_indices, desc="Processing examples"):
+    # Thread-safe lock for updating shared data
+    lock = threading.Lock()
+
+    # Helper function to process a single example
+    def process_example(idx):
         example = dataset[idx]
 
         try:
@@ -471,29 +479,12 @@ def run_benchmark(dataset_name, output_file='results_gemini.csv', checkpoint_fil
                 model, example, num_video_frames=num_video_frames
             )
 
-            # Check if model failed to provide valid answer
-            if model_answer is None:
-                failed_answers += 1
-
             # Evaluate
             is_correct = evaluate_response(
                 model_answer,
                 example['answer'],
                 example['answer_choices']
             )
-
-            # Update counters
-            if is_correct:
-                correct += 1
-            total += 1
-
-            # Update statistics by question type
-            q_type = example['question_type']
-            if q_type not in stats_by_type:
-                stats_by_type[q_type] = {'correct': 0, 'total': 0}
-            stats_by_type[q_type]['total'] += 1
-            if is_correct:
-                stats_by_type[q_type]['correct'] += 1
 
             # Store result with all original metadata
             result = {
@@ -511,22 +502,57 @@ def run_benchmark(dataset_name, output_file='results_gemini.csv', checkpoint_fil
                 'correct': is_correct,
                 'media_type': example['media_type']
             }
-            results.append(result)
-            processed_indices.add(idx)
 
-            # Save checkpoint after each example
-            if idx % 10 == 0 or idx == unprocessed_indices[-1]:  # Save every 10 examples or at the end
-                save_checkpoint(checkpoint_file, processed_indices, results)
-
-                # Save intermediate CSV
-                df = pd.DataFrame(results)
-                df.to_csv(output_file, index=False)
+            return idx, result, model_answer, is_correct, example['question_type']
 
         except Exception as e:
             print(f"\n❌ Error processing example {idx}: {e}")
-            # Save checkpoint even on error
-            save_checkpoint(checkpoint_file, processed_indices, results)
-            continue
+            return idx, None, None, False, None
+
+    # Process examples in parallel using ThreadPoolExecutor
+    completed_count = 0
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # Submit all tasks
+        future_to_idx = {executor.submit(process_example, idx): idx for idx in unprocessed_indices}
+
+        # Process completed futures with progress bar
+        with tqdm(total=len(unprocessed_indices), desc="Processing examples") as pbar:
+            for future in as_completed(future_to_idx):
+                idx, result, model_answer, is_correct, q_type = future.result()
+
+                if result is not None:
+                    # Thread-safe update of shared state
+                    with lock:
+                        # Check if model failed to provide valid answer
+                        if model_answer is None:
+                            failed_answers += 1
+
+                        # Update counters
+                        if is_correct:
+                            correct += 1
+                        total += 1
+
+                        # Update statistics by question type
+                        if q_type:
+                            if q_type not in stats_by_type:
+                                stats_by_type[q_type] = {'correct': 0, 'total': 0}
+                            stats_by_type[q_type]['total'] += 1
+                            if is_correct:
+                                stats_by_type[q_type]['correct'] += 1
+
+                        # Store result
+                        results.append(result)
+                        processed_indices.add(idx)
+                        completed_count += 1
+
+                        # Save checkpoint periodically
+                        if completed_count % 10 == 0 or completed_count == len(unprocessed_indices):
+                            save_checkpoint(checkpoint_file, processed_indices, results)
+                            # Save intermediate CSV
+                            df = pd.DataFrame(results)
+                            df.to_csv(output_file, index=False)
+
+                pbar.update(1)
 
     # Calculate accuracy
     overall_accuracy = correct / total if total > 0 else 0
@@ -588,6 +614,8 @@ if __name__ == "__main__":
                         help="Number of frames to extract for video examples")
     parser.add_argument("--media_type", type=str, default="all", choices=["all", "image", "video"],
                         help="Filter dataset by media type")
+    parser.add_argument("--max_workers", type=int, default=5,
+                        help="Number of concurrent threads for parallel API calls (default: 5)")
 
     args = parser.parse_args()
 
@@ -602,5 +630,6 @@ if __name__ == "__main__":
         checkpoint_file=args.checkpoint_file,
         model_name=args.model_name,
         num_video_frames=args.num_video_frames,
-        media_type=args.media_type
+        media_type=args.media_type,
+        max_workers=args.max_workers
     )
