@@ -268,43 +268,91 @@ def run_benchmark(dataset_name, split="test", output_csv="gpt5_vqa_results.csv",
     if max_examples:
         total = min(total, max_examples)
         dset = dset.select(range(total))
+
+    # Check for existing results to resume from
+    processed_indices = set()
+    old_results = []
+    if os.path.exists(output_csv):
+        print(f"\n📂 Found existing results file: {output_csv}")
+        old_df = pd.read_csv(output_csv)
+        if "idx" in old_df.columns:
+            processed_indices = set(old_df["idx"].values)
+            old_results = old_df.to_dict('records')
+            print(f"   Resuming from checkpoint: {len(processed_indices)} examples already processed")
+
+    # Get unprocessed indices
+    all_indices = list(range(total))
+    unprocessed_indices = [i for i in all_indices if i not in processed_indices]
+
     print(f"\n🚀 Starting GPT-5 evaluation …")
     print(f"   Model: {MODEL_NAME}")
     print(f"   Total examples: {total}")
+    print(f"   Already processed: {len(processed_indices)}")
+    print(f"   Remaining: {len(unprocessed_indices)}")
     print(f"   Using {num_workers} workers")
 
-    # Split indices
-    indices = list(range(total))
-    chunks = [indices[i::num_workers] for i in range(num_workers)]
-
-    worker_args = []
-    for w, chunk in enumerate(chunks):
-        worker_csv = f"results_worker_{w}.csv"
-        worker_args.append((w, chunk, dset, worker_csv))
-
-    if num_workers > 1:
-        with Pool(processes=num_workers) as pool:
-            worker_csvs = pool.map(worker_process, worker_args)
+    # If all examples are already processed, skip to results
+    if len(unprocessed_indices) == 0:
+        print("\n✅ All examples already processed!")
+        all_df = pd.DataFrame(old_results)
     else:
-        worker_csvs = [worker_process(worker_args[0])]
+        # Split unprocessed indices among workers
+        chunks = [unprocessed_indices[i::num_workers] for i in range(num_workers)]
 
-    # Merge results
-    all_df = pd.concat(
-        [pd.read_csv(f) for f in worker_csvs if os.path.exists(f)],
-        ignore_index=True
-    )
+        worker_args = []
+        for w, chunk in enumerate(chunks):
+            if len(chunk) > 0:  # Only create worker if it has work to do
+                worker_csv = f"results_worker_{w}.csv"
+                worker_args.append((w, chunk, dset, worker_csv))
+
+        if num_workers > 1 and len(worker_args) > 1:
+            with Pool(processes=len(worker_args)) as pool:
+                worker_csvs = pool.map(worker_process, worker_args)
+        else:
+            worker_csvs = [worker_process(worker_args[0])] if worker_args else []
+
+        # Merge new results with old results
+        new_dfs = [pd.read_csv(f) for f in worker_csvs if os.path.exists(f)]
+        if old_results:
+            all_dfs = [pd.DataFrame(old_results)] + new_dfs
+        else:
+            all_dfs = new_dfs
+
+        all_df = pd.concat(all_dfs, ignore_index=True) if all_dfs else pd.DataFrame()
+
     all_df.to_csv(output_csv, index=False)
 
     correct = all_df["correct"].sum()
     total = len(all_df)
     acc = correct / total if total else 0
 
+    # Calculate accuracy by question type
+    stats_by_type = {}
+    accuracy_by_type = {}
+
+    if "question_type" in all_df.columns:
+        for q_type in all_df["question_type"].unique():
+            if pd.notna(q_type):
+                type_df = all_df[all_df["question_type"] == q_type]
+                type_correct = type_df["correct"].sum()
+                type_total = len(type_df)
+                stats_by_type[q_type] = {'correct': type_correct, 'total': type_total}
+                accuracy_by_type[q_type] = type_correct / type_total if type_total > 0 else 0
+
     print("\n" + "=" * 80)
     print("GPT-5 BENCHMARK RESULTS (Merged)")
     print("=" * 80)
     print(f"Model: {MODEL_NAME}")
     print(f"Accuracy: {acc:.2%} ({correct}/{total})")
-    print(f"Results saved to: {output_csv}")
+
+    if stats_by_type:
+        print(f"\nAccuracy by Question Type:")
+        for q_type in sorted(stats_by_type.keys()):
+            stats = stats_by_type[q_type]
+            type_acc = accuracy_by_type[q_type]
+            print(f"  {q_type}: {type_acc:.2%} ({stats['correct']}/{stats['total']})")
+
+    print(f"\nResults saved to: {output_csv}")
     print("=" * 80)
 
 
