@@ -1,4 +1,5 @@
 import os
+import argparse
 import pandas as pd
 import numpy as np
 from datasets import load_dataset
@@ -339,23 +340,35 @@ def save_checkpoint(checkpoint_file, processed_indices, results):
         pickle.dump(checkpoint_data, f)
 
 def run_benchmark(dataset_name, output_file='results.csv', checkpoint_file='checkpoint.pkl',
-                  model_name="meta-llama/Llama-3.2-11B-Vision-Instruct", num_video_frames=32):
+                  model_name="meta-llama/Llama-3.2-11B-Vision-Instruct", num_video_frames=32,
+                  media_type="all"):
     """
     Run benchmark evaluation on the entire dataset with checkpointing.
-    
+
     Args:
         dataset_name: Name of the HuggingFace dataset
         output_file: CSV file to save results
         checkpoint_file: Pickle file to save checkpoints
         model_name: Name of the model to evaluate
         num_video_frames: Number of frames to extract from videos (default: 32)
-    
+        media_type: Filter by media type - 'image', 'video', or 'all' (default: 'all')
+
     Returns:
         Dictionary with evaluation metrics
     """
     # Load dataset
     dataset = load_benchmark_dataset(dataset_name)
-    
+
+    # Optional filtering by media type
+    if media_type != "all":
+        print(f"Filtering dataset for {media_type} examples only...")
+        filtered_indices = [
+            i for i in range(len(dataset))
+            if dataset[i]['media_type'] == media_type
+        ]
+        dataset = dataset.select(filtered_indices)
+        print(f"Remaining examples after filter: {len(dataset)}")
+
     # Initialize model
     model, processor = initialize_model(model_name)
     
@@ -498,19 +511,61 @@ def run_benchmark(dataset_name, output_file='results.csv', checkpoint_file='chec
     
     return summary
 
-if __name__ == "__main__":
-    # Configuration
-    DATASET_NAME = "JessicaE/OpenSeeSimE-Structural"
-    OUTPUT_FILE = "llama32_11b_vision_benchmark_results.csv"
-    CHECKPOINT_FILE = "llama32_11b_vision_checkpoint.pkl"
-    MODEL_NAME = "meta-llama/Llama-3.2-11B-Vision-Instruct"
-    NUM_VIDEO_FRAMES = 32  # Extract 32 frames uniformly from each video (with middle frame guaranteed)
+def main():
+    """Main function with command-line argument parsing."""
+    parser = argparse.ArgumentParser(
+        description="Llama 3.2 11B Vision VQA Benchmark"
+    )
+    parser.add_argument(
+        "--dataset",
+        type=str,
+        default="JessicaE/OpenSeeSimE-Structural",
+        help="HuggingFace dataset name"
+    )
+    parser.add_argument(
+        "--output",
+        type=str,
+        default="llama32_11b_vision_benchmark_results.csv",
+        help="Output CSV file path"
+    )
+    parser.add_argument(
+        "--checkpoint",
+        type=str,
+        default="llama32_11b_vision_checkpoint.pkl",
+        help="Checkpoint file path"
+    )
+    parser.add_argument(
+        "--model",
+        type=str,
+        default="meta-llama/Llama-3.2-11B-Vision-Instruct",
+        help="Model name/path"
+    )
+    parser.add_argument(
+        "--num_video_frames",
+        type=int,
+        default=32,
+        help="Number of frames to extract from videos"
+    )
+    parser.add_argument(
+        "--media_type",
+        type=str,
+        choices=["image", "video", "all"],
+        default="all",
+        help="Filter dataset by media type (image, video, or all)"
+    )
+
+    args = parser.parse_args()
 
     # Run benchmark
     summary = run_benchmark(
-        DATASET_NAME,
-        OUTPUT_FILE,
-        checkpoint_file=CHECKPOINT_FILE,
-        model_name=MODEL_NAME,
-        num_video_frames=NUM_VIDEO_FRAMES
+        dataset_name=args.dataset,
+        output_file=args.output,
+        checkpoint_file=args.checkpoint,
+        model_name=args.model,
+        num_video_frames=args.num_video_frames,
+        media_type=args.media_type
     )
+
+
+if __name__ == "__main__":
+    main()
