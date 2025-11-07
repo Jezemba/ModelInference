@@ -2,7 +2,7 @@ import os
 import pandas as pd
 import numpy as np
 from datasets import load_dataset
-from transformers import AutoProcessor, Llama4ForConditionalGeneration
+from transformers import AutoProcessor, MllamaForConditionalGeneration
 from PIL import Image
 import torch
 from tqdm import tqdm
@@ -26,30 +26,30 @@ def load_benchmark_dataset(dataset_name, split='test'):
     print(f"Loaded {len(dataset)} examples")
     return dataset
 
-def initialize_model(model_name="meta-llama/Llama-4-Scout-17B-16E-Instruct"):
+def initialize_model(model_name="meta-llama/Llama-3.2-11B-Vision-Instruct"):
     """
-    Initialize Llama 4 Scout model and processor.
-    
+    Initialize Llama 3.2 Vision model and processor.
+
     Args:
         model_name: HuggingFace model identifier
-    
+
     Returns:
         model, processor
     """
     print(f"Loading model: {model_name}")
-    
+
     # Load processor
     processor = AutoProcessor.from_pretrained(model_name)
-    
+
     # Load model
-    # Note: Using sdpa instead of flex_attention as flex_attention can have compatibility issues
-    model = Llama4ForConditionalGeneration.from_pretrained(
+    # Note: Using sdpa (Scaled Dot Product Attention) for better compatibility
+    model = MllamaForConditionalGeneration.from_pretrained(
         model_name,
         device_map="auto",
         torch_dtype=torch.bfloat16,
         attn_implementation="sdpa"  # Use SDPA for better compatibility
     ).eval()
-    
+
     print("Model loaded successfully")
     return model, processor
 
@@ -109,13 +109,13 @@ def extract_video_frames(video_path, num_frames=32):
 
 def prepare_messages(example, media_type, frames=None):
     """
-    Prepare message format for Llama 4 Scout model with structured output.
-    
+    Prepare message format for Llama 3.2 Vision model with structured output.
+
     Args:
         example: Single example from dataset
         media_type: Either 'image' or 'video'
         frames: List of PIL Images (for video)
-    
+
     Returns:
         messages list in proper format
     """
@@ -150,7 +150,7 @@ def prepare_messages(example, media_type, frames=None):
             }
         ]
     else:  # video
-        # Llama 4 supports multiple images (tested up to 5, but we'll use more)
+        # Llama 3.2 Vision supports multiple images for video understanding
         # Pass video frames as multiple images
         content = []
         for frame in frames:
@@ -213,13 +213,13 @@ def parse_model_response(response_text, answer_choices):
 def run_inference_single(model, processor, example, num_video_frames=32):
     """
     Run inference on a single example.
-    
+
     Args:
-        model: Llama 4 Scout model
+        model: Llama 3.2 Vision model
         processor: Processor for the model
         example: Single example from dataset
         num_video_frames: Number of frames to extract from video (default: 32)
-    
+
     Returns:
         tuple: (answer, explanation, full_response)
     """
@@ -339,7 +339,7 @@ def save_checkpoint(checkpoint_file, processed_indices, results):
         pickle.dump(checkpoint_data, f)
 
 def run_benchmark(dataset_name, output_file='results.csv', checkpoint_file='checkpoint.pkl',
-                  model_name="meta-llama/Llama-4-Scout-17B-16E-Instruct", num_video_frames=32):
+                  model_name="meta-llama/Llama-3.2-11B-Vision-Instruct", num_video_frames=32):
     """
     Run benchmark evaluation on the entire dataset with checkpointing.
     
@@ -501,15 +501,15 @@ def run_benchmark(dataset_name, output_file='results.csv', checkpoint_file='chec
 if __name__ == "__main__":
     # Configuration
     DATASET_NAME = "JessicaE/OpenSeeSimE-Structural"
-    OUTPUT_FILE = "llama4_scout_benchmark_results.csv"
-    CHECKPOINT_FILE = "llama4_scout_checkpoint.pkl"
-    MODEL_NAME = "meta-llama/Llama-4-Scout-17B-16E-Instruct"
+    OUTPUT_FILE = "llama32_11b_vision_benchmark_results.csv"
+    CHECKPOINT_FILE = "llama32_11b_vision_checkpoint.pkl"
+    MODEL_NAME = "meta-llama/Llama-3.2-11B-Vision-Instruct"
     NUM_VIDEO_FRAMES = 32  # Extract 32 frames uniformly from each video (with middle frame guaranteed)
-    
+
     # Run benchmark
     summary = run_benchmark(
-        DATASET_NAME, 
-        OUTPUT_FILE, 
+        DATASET_NAME,
+        OUTPUT_FILE,
         checkpoint_file=CHECKPOINT_FILE,
         model_name=MODEL_NAME,
         num_video_frames=NUM_VIDEO_FRAMES
