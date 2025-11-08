@@ -70,6 +70,37 @@ def get_presigned_s3_url(file_name, media_type, s3_client, expiry_seconds=3600):
         return None
 
 
+def build_system_prompt():
+    """Build a system prompt to guide the model's behavior"""
+    return (
+        "You are a visual question answering assistant. You MUST follow this exact format:\n\n"
+        "FORMAT REQUIREMENTS:\n"
+        "Line 1: Copy the EXACT answer text from the provided options (word-for-word, including all symbols)\n"
+        "Line 2: One brief explanation sentence (10-15 words)\n\n"
+        "CRITICAL RULES:\n"
+        "1. The first line MUST be an EXACT COPY of one option - do not paraphrase or summarize\n"
+        "2. Copy ALL words, punctuation, and mathematical symbols exactly as shown in the option\n"
+        "3. Do NOT add phrases like 'The answer is' or explanatory text on line 1\n"
+        "4. Do NOT shorten or reword long options - copy them completely\n\n"
+        "EXAMPLE 1 (Simple):\n"
+        "Question: Is the sky blue?\n"
+        "Options: Yes, No\n"
+        "CORRECT:\n"
+        "Yes\n"
+        "The clear atmosphere scatters blue wavelengths effectively.\n\n"
+        "EXAMPLE 2 (Complex option with symbols):\n"
+        "Question: What is the range?\n"
+        "Options: Less than 10× min, More than 1000× min\n"
+        "CORRECT:\n"
+        "More than 1000× min\n"
+        "The values span from 7 billion to 1.6 trillion.\n\n"
+        "INCORRECT:\n"
+        "More than three orders of magnitude\n"
+        "(This paraphrases instead of copying the exact option)\n\n"
+        "Remember: Line 1 = EXACT COPY of option. Line 2 = explanation."
+    )
+
+
 def build_prompt(example):
     """Structured prompt identical to InternVL logic."""
     question = example["question"]
@@ -120,12 +151,21 @@ def evaluate(model_answer, ground_truth, answer_choices):
     return False
 
 
-def openai_respond(user_content):
-    """Wrapper for GPT-5 Responses API call."""
+def openai_respond(user_content, system_prompt=None):
+    """Wrapper for GPT-5 Responses API call with optional system prompt."""
     client = OpenAI()
+    input_messages = []
+
+    # Add system message if provided (OpenAI recommendation)
+    if system_prompt:
+        input_messages.append({"role": "system", "content": system_prompt})
+
+    # Add user message
+    input_messages.append({"role": "user", "content": user_content})
+
     resp = client.responses.create(
         model=MODEL_NAME,
-        input=[{"role": "user", "content": user_content}],
+        input=input_messages,
         reasoning={"effort": REASONING_EFFORT},
         text={"verbosity": TEXT_VERBOSITY},
         max_output_tokens=MAX_OUTPUT_TOKENS,
@@ -141,6 +181,7 @@ def run_single_example(example):
     s3_client = get_s3_client()
     media_type = example["media_type"]
     prompt = build_prompt(example)
+    system_prompt = build_system_prompt()
 
     # ---------------- IMAGE ----------------
     if media_type == "image":
@@ -151,7 +192,7 @@ def run_single_example(example):
             {"type": "input_text", "text": prompt},
             {"type": "input_image", "image_url": image_url},
         ]
-        text = openai_respond(user_content)
+        text = openai_respond(user_content, system_prompt=system_prompt)
         ans, expl = parse_model_response(text, example.get("answer_choices"))
         return ans, expl, text
 
@@ -197,7 +238,7 @@ def run_single_example(example):
             user_content.append({"type": "input_image", "image_url": frame_b64})
 
         # 4️⃣ Send to GPT-5
-        text = openai_respond(user_content)
+        text = openai_respond(user_content, system_prompt=system_prompt)
         ans, expl = parse_model_response(text, example.get("answer_choices"))
         return ans, expl, text
 
@@ -257,11 +298,9 @@ def run_benchmark(dataset_name, split="test", output_csv="gpt5_vqa_results.csv",
     # Optional filtering by media type
     if media_type != "all":
         print(f"Filtering dataset for {media_type} examples only...")
-        keep_idx = [
-            i for i in range(len(dset))
-            if dset._data.table["media_type"][i].as_py() == media_type
-        ]
-        dset = dset.select(keep_idx)
+        media_types = dset["media_type"]
+        filtered_indices = [i for i, mt in enumerate(media_types) if mt == media_type]
+        dset = dset.select(filtered_indices)
         print(f"Remaining examples after filter: {len(dset)}")
 
     total = len(dset)
