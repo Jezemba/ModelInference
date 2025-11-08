@@ -7,6 +7,34 @@ This guide will help you set up a Python virtual environment for running Qwen VL
 - Python 3.10 or 3.11 (recommended)
 - CUDA 11.8 or 12.1+ (for GPU support)
 - At least 16GB GPU memory for 2B model, 40GB+ for 8B model
+- **Python development headers** (CRITICAL - see below)
+- Build tools (gcc, g++, make)
+
+### 0. Install System Dependencies (REQUIRED)
+
+**Ubuntu/Debian:**
+```bash
+# Install Python development headers (REQUIRED for vLLM/Triton)
+sudo apt-get update
+sudo apt-get install -y python3.12-dev build-essential
+
+# Adjust python3.12-dev to match your Python version:
+# - python3.10-dev for Python 3.10
+# - python3.11-dev for Python 3.11
+# - python3.12-dev for Python 3.12
+```
+
+**Red Hat/CentOS/Fedora:**
+```bash
+sudo yum install -y python3.12-devel
+sudo yum groupinstall "Development Tools"
+
+# Or with dnf:
+sudo dnf install -y python3.12-devel
+sudo dnf groupinstall "Development Tools"
+```
+
+**⚠️ Important:** Without Python development headers, you'll get a "Python.h: No such file or directory" error when launching vLLM. See `TROUBLESHOOTING_PYTHON_HEADERS.md` for details.
 
 ## Setup Steps
 
