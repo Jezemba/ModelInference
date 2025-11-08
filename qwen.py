@@ -227,7 +227,11 @@ def prepare_prompt(question, answer_choices):
             prompt += f"- {choice}\n"
         prompt += "\n"
 
-    prompt += "Your answer:\n"
+    # Add explicit instructions
+    prompt += "Instructions:\n"
+    prompt += "1. First line: Provide ONLY your answer exactly as it appears in the options above.\n"
+    prompt += "2. Second line onwards: Provide a brief summary explaining your reasoning.\n\n"
+    prompt += "Answer:"
 
     return prompt
 
