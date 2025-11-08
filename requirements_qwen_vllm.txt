@@ -1,0 +1,35 @@
+# Core ML frameworks
+torch>=2.1.0
+torchvision>=0.16.0
+
+# vLLM for serving models
+vllm>=0.6.0
+
+# Transformers and model support
+transformers>=4.40.0
+accelerate>=0.27.0
+sentencepiece>=0.1.99
+tiktoken>=0.6.0
+
+# OpenAI client for API calls
+openai>=1.12.0
+
+# Dataset handling
+datasets>=2.18.0
+huggingface-hub>=0.20.0
+
+# Image and video processing
+Pillow>=10.0.0
+opencv-python>=4.8.0
+decord>=0.6.0
+
+# Optional: torchcodec for advanced video decoding
+# torchcodec>=0.1.0
+
+# Data processing and utilities
+pandas>=2.0.0
+numpy>=1.24.0
+tqdm>=4.65.0
+
+# Additional utilities
+requests>=2.31.0
