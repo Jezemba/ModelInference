@@ -203,19 +203,18 @@ def build_system_prompt():
         "Remember: Line 1 = EXACT COPY of option. Line 2 = explanation."
     )
 
-def prepare_prompt(question, answer_choices):
+def prepare_user_prompt(question, answer_choices):
     """
-    Prepare prompt with the system prompt format.
+    Prepare user prompt (without system prompt).
 
     Args:
         question: Question text
         answer_choices: List of answer choices
 
     Returns:
-        Formatted prompt string
+        Formatted user prompt string
     """
-    # Build prompt with system instructions
-    prompt = build_system_prompt() + "\n\n"
+    prompt = ""
 
     # Add the question
     prompt += f"Question: {question}\n\n"
@@ -227,7 +226,11 @@ def prepare_prompt(question, answer_choices):
             prompt += f"- {choice}\n"
         prompt += "\n"
 
-    prompt += "Your answer:\n"
+    # Add explicit instructions
+    prompt += "Instructions:\n"
+    prompt += "1. First line: Provide ONLY your answer exactly as it appears in the options above.\n"
+    prompt += "2. Second line onwards: Provide a brief summary explaining your reasoning.\n\n"
+    prompt += "Answer:"
 
     return prompt
 
@@ -446,20 +449,21 @@ def process_dataset(args):
 
                 media_type = example['media_type']
 
-                # Prepare prompt with new system prompt format
+                # Prepare prompts
                 question = example['question']
                 answer_choices = example['answer_choices']
-                prompt = prepare_prompt(question, answer_choices)
+                user_prompt = prepare_user_prompt(question, answer_choices)
+                system_prompt = build_system_prompt()
 
                 # Create content array based on media type
                 if media_type == 'image':
                     # Convert PIL Image to base64
                     base64_image = encode_image_to_base64(example['image'])
 
-                    content = [
+                    user_content = [
                         {"type": "image_url",
                         "image_url": {"url": base64_image}},
-                        {"type": "text", "text": prompt}
+                        {"type": "text", "text": user_prompt}
                     ]
                 else:  # video
                     # Extract frames from video
@@ -475,17 +479,17 @@ def process_dataset(args):
                             raise ValueError("Failed to extract frames from video")
 
                         # Create content with multiple frames
-                        content = []
+                        user_content = []
                         for base64_frame in base64_frames:
-                            content.append({
+                            user_content.append({
                                 "type": "image_url",
                                 "image_url": {"url": base64_frame}
                             })
 
                         # Add text prompt at the end
-                        content.append({
+                        user_content.append({
                             "type": "text",
-                            "text": f"These are {len(base64_frames)} frames from a video. {prompt}"
+                            "text": f"These are {len(base64_frames)} frames from a video. {user_prompt}"
                         })
                     except Exception as e:
                         print(f"Error processing video for example {idx}: {e}")
@@ -499,11 +503,15 @@ def process_dataset(args):
                         save_checkpoint(args.checkpoint, processed_indices, results, problematic_indices)
                         continue
 
-                # Create messages for API
+                # Create messages for API with separate system and user roles
                 messages = [
                     {
+                        "role": "system",
+                        "content": system_prompt
+                    },
+                    {
                         "role": "user",
-                        "content": content
+                        "content": user_content
                     }
                 ]
 
