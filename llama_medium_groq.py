@@ -18,6 +18,8 @@ from tqdm import tqdm
 import pickle
 from pathlib import Path
 from groq import Groq
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
 
 def load_benchmark_dataset(dataset_name, split='test'):
     """
@@ -34,6 +36,36 @@ def load_benchmark_dataset(dataset_name, split='test'):
     dataset = load_dataset(dataset_name, split=split, token=True)
     print(f"Loaded {len(dataset)} examples")
     return dataset
+
+def build_system_prompt():
+    """Build a system prompt to guide the model's behavior"""
+    return (
+        "You are a visual question answering assistant. You MUST follow this exact format:\n\n"
+        "FORMAT REQUIREMENTS:\n"
+        "Line 1: Copy the EXACT answer text from the provided options (word-for-word, including all symbols)\n"
+        "Line 2: One brief explanation sentence (10-15 words)\n\n"
+        "CRITICAL RULES:\n"
+        "1. The first line MUST be an EXACT COPY of one option - do not paraphrase or summarize\n"
+        "2. Copy ALL words, punctuation, and mathematical symbols exactly as shown in the option\n"
+        "3. Do NOT add phrases like 'The answer is' or explanatory text on line 1\n"
+        "4. Do NOT shorten or reword long options - copy them completely\n\n"
+        "EXAMPLE 1 (Simple):\n"
+        "Question: Is the sky blue?\n"
+        "Options: Yes, No\n"
+        "CORRECT:\n"
+        "Yes\n"
+        "The clear atmosphere scatters blue wavelengths effectively.\n\n"
+        "EXAMPLE 2 (Complex option with symbols):\n"
+        "Question: What is the range?\n"
+        "Options: Less than 10× min, More than 1000× min\n"
+        "CORRECT:\n"
+        "More than 1000× min\n"
+        "The values span from 7 billion to 1.6 trillion.\n\n"
+        "INCORRECT:\n"
+        "More than three orders of magnitude\n"
+        "(This paraphrases instead of copying the exact option)\n\n"
+        "Remember: Line 1 = EXACT COPY of option. Line 2 = explanation."
+    )
 
 def initialize_groq_client():
     """
@@ -105,6 +137,7 @@ def extract_video_frames(video_path, num_frames=8):
 def prepare_groq_messages(example, media_type, frames=None):
     """
     Prepare message format for Groq API with structured output.
+    Uses separate system and user messages for Llama 4 Maverick.
 
     Args:
         example: Single example from dataset
@@ -117,7 +150,7 @@ def prepare_groq_messages(example, media_type, frames=None):
     question = example['question']
     answer_choices = example['answer_choices']
 
-    # Build structured prompt
+    # Build user prompt (system message provides detailed rules, user message reinforces them)
     prompt = f"{question}\n\n"
 
     # Add answer choices
@@ -127,7 +160,7 @@ def prepare_groq_messages(example, media_type, frames=None):
             prompt += f"- {choice}\n"
         prompt += "\n"
 
-    # Add instruction for structured response
+    # Add instruction for structured response (reinforces system prompt)
     prompt += "Instructions:\n"
     prompt += "1. First line: Provide ONLY your answer exactly as it appears in the options above (e.g., 'A', 'Yes', 'X axis', etc.). Do NOT add any other text on this line.\n"
     prompt += "2. Second line onwards: Provide a brief summary (1-2 sentences) explaining your reasoning.\n\n"
@@ -165,6 +198,10 @@ def prepare_groq_messages(example, media_type, frames=None):
             })
 
     messages = [
+        {
+            "role": "system",
+            "content": build_system_prompt()
+        },
         {
             "role": "user",
             "content": content
@@ -336,7 +373,7 @@ def save_checkpoint(checkpoint_file, processed_indices, results):
         pickle.dump(checkpoint_data, f)
 
 def run_benchmark(dataset_name, output_file='results_groq.csv', checkpoint_file='checkpoint_groq.pkl',
-                  model_name="llama-3.2-90b-vision-preview", num_video_frames=8):
+                  model_name="llama-3.2-90b-vision-preview", num_video_frames=8, media_type="all", num_workers=1):
     """
     Run benchmark evaluation on the entire dataset with checkpointing using Groq API.
 
@@ -346,12 +383,22 @@ def run_benchmark(dataset_name, output_file='results_groq.csv', checkpoint_file=
         checkpoint_file: Pickle file to save checkpoints
         model_name: Name of the Groq model to use
         num_video_frames: Number of frames to extract from videos (default: 8)
+        media_type: Filter by media type - 'image', 'video', or 'all' (default: 'all')
+        num_workers: Number of parallel workers for processing (default: 1)
 
     Returns:
         Dictionary with evaluation metrics
     """
     # Load dataset
     dataset = load_benchmark_dataset(dataset_name)
+
+    # Filter by media type using faster approach
+    if media_type != "all":
+        print(f"Filtering dataset for {media_type} examples only...")
+        media_types = dataset["media_type"]
+        filtered_indices = [i for i, mt in enumerate(media_types) if mt == media_type]
+        dataset = dataset.select(filtered_indices)
+        print(f"Remaining examples after filter: {len(dataset)}")
 
     # Initialize Groq client
     client = initialize_groq_client()
@@ -385,8 +432,15 @@ def run_benchmark(dataset_name, output_file='results_groq.csv', checkpoint_file=
     # Get unprocessed indices
     unprocessed_indices = [i for i in range(len(dataset)) if i not in processed_indices]
 
-    # Process one by one
-    for idx in tqdm(unprocessed_indices, desc="Processing examples"):
+    # Thread-safe locks for shared data
+    results_lock = threading.Lock()
+    stats_lock = threading.Lock()
+    checkpoint_counter = [0]  # Use list for mutable counter in closure
+
+    def process_example(idx):
+        """Worker function to process a single example"""
+        nonlocal correct, total, failed_answers
+
         example = dataset[idx]
 
         try:
@@ -396,8 +450,7 @@ def run_benchmark(dataset_name, output_file='results_groq.csv', checkpoint_file=
             )
 
             # Check if model failed to provide valid answer
-            if model_answer is None:
-                failed_answers += 1
+            is_failed = model_answer is None
 
             # Evaluate
             is_correct = evaluate_response(
@@ -405,19 +458,6 @@ def run_benchmark(dataset_name, output_file='results_groq.csv', checkpoint_file=
                 example['answer'],
                 example['answer_choices']
             )
-
-            # Update counters
-            if is_correct:
-                correct += 1
-            total += 1
-
-            # Update statistics by question type
-            q_type = example['question_type']
-            if q_type not in stats_by_type:
-                stats_by_type[q_type] = {'correct': 0, 'total': 0}
-            stats_by_type[q_type]['total'] += 1
-            if is_correct:
-                stats_by_type[q_type]['correct'] += 1
 
             # Store result with all original metadata
             result = {
@@ -435,22 +475,62 @@ def run_benchmark(dataset_name, output_file='results_groq.csv', checkpoint_file=
                 'correct': is_correct,
                 'media_type': example['media_type']
             }
-            results.append(result)
-            processed_indices.add(idx)
 
-            # Save checkpoint after each example
-            if idx % 10 == 0 or idx == unprocessed_indices[-1]:  # Save every 10 examples or at the end
-                save_checkpoint(checkpoint_file, processed_indices, results)
+            # Update shared data structures with thread safety
+            with results_lock:
+                results.append(result)
+                processed_indices.add(idx)
 
-                # Save intermediate CSV
-                df = pd.DataFrame(results)
-                df.to_csv(output_file, index=False)
+                if is_failed:
+                    failed_answers += 1
+                if is_correct:
+                    correct += 1
+                total += 1
+
+            # Update statistics by question type
+            q_type = example['question_type']
+            with stats_lock:
+                if q_type not in stats_by_type:
+                    stats_by_type[q_type] = {'correct': 0, 'total': 0}
+                stats_by_type[q_type]['total'] += 1
+                if is_correct:
+                    stats_by_type[q_type]['correct'] += 1
+
+            # Save checkpoint periodically
+            with results_lock:
+                checkpoint_counter[0] += 1
+                if checkpoint_counter[0] % 10 == 0:
+                    save_checkpoint(checkpoint_file, processed_indices, results)
+                    df = pd.DataFrame(results)
+                    df.to_csv(output_file, index=False)
+
+            return True
 
         except Exception as e:
             print(f"\n❌ Error processing example {idx}: {e}")
-            # Save checkpoint even on error
-            save_checkpoint(checkpoint_file, processed_indices, results)
-            continue
+            with results_lock:
+                save_checkpoint(checkpoint_file, processed_indices, results)
+            return False
+
+    # Process examples with multiple workers
+    if num_workers == 1:
+        # Sequential processing with progress bar
+        for idx in tqdm(unprocessed_indices, desc="Processing examples"):
+            process_example(idx)
+    else:
+        # Parallel processing with multiple workers
+        print(f"Processing with {num_workers} workers...")
+        with ThreadPoolExecutor(max_workers=num_workers) as executor:
+            # Submit all tasks
+            futures = {executor.submit(process_example, idx): idx for idx in unprocessed_indices}
+
+            # Process completed tasks with progress bar
+            for future in tqdm(as_completed(futures), total=len(futures), desc="Processing examples"):
+                idx = futures[future]
+                try:
+                    future.result()
+                except Exception as e:
+                    print(f"\n❌ Unexpected error in worker for example {idx}: {e}")
 
     # Calculate accuracy
     overall_accuracy = correct / total if total > 0 else 0
@@ -510,6 +590,12 @@ if __name__ == "__main__":
     # Extract 8 frames from videos (fewer than local inference for API efficiency)
     NUM_VIDEO_FRAMES = 8
 
+    # Media type filter: 'image', 'video', or 'all'
+    MEDIA_TYPE = "all"
+
+    # Number of parallel workers for processing (1 = sequential, >1 = parallel)
+    NUM_WORKERS = 1
+
     print("\n" + "="*80)
     print("IMPORTANT: Set your Groq API key before running:")
     print("  export GROQ_API_KEY='your_api_key_here'")
@@ -521,5 +607,7 @@ if __name__ == "__main__":
         OUTPUT_FILE,
         checkpoint_file=CHECKPOINT_FILE,
         model_name=MODEL_NAME,
-        num_video_frames=NUM_VIDEO_FRAMES
+        num_video_frames=NUM_VIDEO_FRAMES,
+        media_type=MEDIA_TYPE,
+        num_workers=NUM_WORKERS
     )
