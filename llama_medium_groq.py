@@ -150,8 +150,8 @@ def prepare_groq_messages(example, media_type, frames=None):
     question = example['question']
     answer_choices = example['answer_choices']
 
-    # Build user prompt (system instructions are in separate system message)
-    prompt = f"Question: {question}\n\n"
+    # Build user prompt (system message provides detailed rules, user message reinforces them)
+    prompt = f"{question}\n\n"
 
     # Add answer choices
     if answer_choices and len(answer_choices) > 0:
@@ -160,7 +160,11 @@ def prepare_groq_messages(example, media_type, frames=None):
             prompt += f"- {choice}\n"
         prompt += "\n"
 
-    prompt += "Provide your answer following the format rules:"
+    # Add instruction for structured response (reinforces system prompt)
+    prompt += "Instructions:\n"
+    prompt += "1. First line: Provide ONLY your answer exactly as it appears in the options above (e.g., 'A', 'Yes', 'X axis', etc.). Do NOT add any other text on this line.\n"
+    prompt += "2. Second line onwards: Provide a brief summary (1-2 sentences) explaining your reasoning.\n\n"
+    prompt += "Answer:"
 
     # Format message based on media type
     content = []
