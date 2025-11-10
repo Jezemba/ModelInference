@@ -122,16 +122,20 @@ def prepare_prompt(example):
     answer_choices = example['answer_choices']
 
     # Build user prompt (system prompt will be sent separately in API)
-    prompt = f"Question: {question}\n\n"
+    prompt = f"{question}\n\n"
 
     # Add answer choices
     if answer_choices and len(answer_choices) > 0:
-        prompt += "Options:\n"
+        prompt += "Answer options:\n"
         for choice in answer_choices:
             prompt += f"- {choice}\n"
         prompt += "\n"
 
-    prompt += "Your answer:\n"
+    # Add instruction for structured response
+    prompt += "Instructions:\n"
+    prompt += "1. First line: Provide ONLY your answer exactly as it appears in the options above (e.g., 'A', 'Yes', 'X axis', etc.). Do NOT add any other text on this line.\n"
+    prompt += "2. Second line onwards: Provide a brief summary (1-2 sentences) explaining your reasoning.\n\n"
+    prompt += "Answer:"
 
     return prompt
 
