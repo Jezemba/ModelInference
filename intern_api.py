@@ -7,14 +7,13 @@ from tqdm import tqdm
 import pickle
 import argparse
 import sys
-import requests
-import json
 import base64
 from io import BytesIO
 import time
+from openai import OpenAI
 
 # API Configuration
-API_BASE_URL = "https://internlm.intern-ai.org.cn/api/v1/chat/completions"
+API_BASE_URL = "https://chat.intern-ai.org.cn/api/v1/"
 API_MODEL = "internvl3.5-241b-a28b"  # OpenGVLab/InternVL3_5-241B-A28B non-reasoning full 16fp
 
 def get_api_key():
@@ -122,22 +121,26 @@ def prepare_prompt(example):
     answer_choices = example['answer_choices']
 
     # Build user prompt (system prompt will be sent separately in API)
-    prompt = f"Question: {question}\n\n"
+    prompt = f"{question}\n\n"
 
     # Add answer choices
     if answer_choices and len(answer_choices) > 0:
-        prompt += "Options:\n"
+        prompt += "Answer options:\n"
         for choice in answer_choices:
             prompt += f"- {choice}\n"
         prompt += "\n"
 
-    prompt += "Your answer:\n"
+    # Add instruction for structured response
+    prompt += "Instructions:\n"
+    prompt += "1. First line: Provide ONLY your answer exactly as it appears in the options above (e.g., 'A', 'Yes', 'X axis', etc.). Do NOT add any other text on this line.\n"
+    prompt += "2. Second line onwards: Provide a brief summary (1-2 sentences) explaining your reasoning.\n\n"
+    prompt += "Answer:"
 
     return prompt
 
 def call_api(image, prompt, system_prompt, max_retries=3, retry_delay=2):
     """
-    Call InternLM API with image and prompt.
+    Call InternLM API with image and prompt using OpenAI SDK.
 
     Args:
         image: PIL Image object
@@ -150,80 +153,68 @@ def call_api(image, prompt, system_prompt, max_retries=3, retry_delay=2):
         API response text or None if failed
     """
     api_key = get_api_key()
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json"
-    }
+
+    # Initialize OpenAI client with InternLM endpoint
+    client = OpenAI(
+        api_key=api_key,
+        base_url=API_BASE_URL,
+    )
 
     # Convert image to base64
     image_base64 = image_to_base64(image)
 
-    # Prepare request data
-    data = {
-        "model": API_MODEL,
-        "messages": [
-            {
-                "role": "system",
-                "content": system_prompt
-            },
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": prompt
-                    },
-                    {
-                        "type": "image_base64",
-                        "image_base64": image_base64
-                    }
-                ]
-            }
-        ],
-        "temperature": 0.0,  # Deterministic for benchmarking
-        "max_tokens": 512
-    }
-
     # Make API call with retries
     for attempt in range(max_retries):
         try:
-            response = requests.post(API_BASE_URL, headers=headers, json=data, timeout=60)
+            response = client.chat.completions.create(
+                model=API_MODEL,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": system_prompt
+                    },
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": prompt
+                            },
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": image_base64
+                                }
+                            }
+                        ]
+                    }
+                ],
+                temperature=0.0,  # Deterministic for benchmarking
+                max_tokens=512
+            )
+
+            # Extract response text
+            if response.choices and len(response.choices) > 0:
+                return response.choices[0].message.content
+            else:
+                print(f"Unexpected response format: {response}")
+                return None
+
+        except Exception as e:
+            error_msg = str(e)
+            print(f"API call error (attempt {attempt + 1}/{max_retries}): {error_msg}")
 
             # Check for rate limiting
-            if response.status_code == 429:
+            if "429" in error_msg or "rate limit" in error_msg.lower():
                 wait_time = retry_delay * (2 ** attempt)  # Exponential backoff
                 print(f"Rate limited. Waiting {wait_time}s before retry...")
                 time.sleep(wait_time)
                 continue
 
-            # Check for other errors
-            if response.status_code != 200:
-                print(f"API error {response.status_code}: {response.text}")
-                if attempt < max_retries - 1:
-                    time.sleep(retry_delay)
-                    continue
-                return None
-
-            # Parse response
-            response_data = response.json()
-            if 'choices' in response_data and len(response_data['choices']) > 0:
-                return response_data['choices'][0]['message']['content']
-            else:
-                print(f"Unexpected response format: {response_data}")
-                return None
-
-        except requests.exceptions.Timeout:
-            print(f"Request timeout (attempt {attempt + 1}/{max_retries})")
             if attempt < max_retries - 1:
                 time.sleep(retry_delay)
                 continue
-            return None
 
-        except Exception as e:
-            print(f"API call error: {str(e)}")
-            if attempt < max_retries - 1:
-                time.sleep(retry_delay)
-                continue
             return None
 
     return None
@@ -453,6 +444,14 @@ def run_benchmark(dataset_name, output_file='results.csv', checkpoint_file='chec
     unprocessed_indices = [i for i in range(len(dataset))
                           if i not in processed_indices and i not in problematic_indices]
 
+    # Rate limiting: 30 req/min = 1 request every 2 seconds
+    min_time_between_requests = 2.0
+    last_request_time = None
+
+    # CSV saving optimization: save every N examples instead of every time
+    csv_save_interval = 10
+    examples_since_last_save = 0
+
     # Process one by one
     for idx in tqdm(unprocessed_indices, desc="Processing examples"):
         try:
@@ -476,6 +475,16 @@ def run_benchmark(dataset_name, output_file='results.csv', checkpoint_file='chec
 
                 # Skip to next example
                 continue
+
+            # Smart rate limiting: wait only if needed
+            if last_request_time is not None:
+                elapsed = time.time() - last_request_time
+                if elapsed < min_time_between_requests:
+                    wait_time = min_time_between_requests - elapsed
+                    time.sleep(wait_time)
+
+            # Record request start time
+            last_request_time = time.time()
 
             # Run inference via API
             model_answer, explanation, full_response = run_inference_single(example)
@@ -522,16 +531,16 @@ def run_benchmark(dataset_name, output_file='results.csv', checkpoint_file='chec
             }
             results.append(result)
             processed_indices.add(idx)
+            examples_since_last_save += 1
 
             # Save checkpoint after each example
             save_checkpoint(checkpoint_file, processed_indices, results, problematic_indices)
 
-            # Save intermediate CSV
-            df = pd.DataFrame(results)
-            df.to_csv(output_file, index=False)
-
-            # Small delay to respect rate limits (30 req/min = 2s between requests)
-            time.sleep(2.1)
+            # Save CSV periodically (every N examples) instead of every time
+            if examples_since_last_save >= csv_save_interval:
+                df = pd.DataFrame(results)
+                df.to_csv(output_file, index=False)
+                examples_since_last_save = 0
 
         except Exception as e:
             # General error during processing
