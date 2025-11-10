@@ -444,6 +444,14 @@ def run_benchmark(dataset_name, output_file='results.csv', checkpoint_file='chec
     unprocessed_indices = [i for i in range(len(dataset))
                           if i not in processed_indices and i not in problematic_indices]
 
+    # Rate limiting: 30 req/min = 1 request every 2 seconds
+    min_time_between_requests = 2.0
+    last_request_time = None
+
+    # CSV saving optimization: save every N examples instead of every time
+    csv_save_interval = 10
+    examples_since_last_save = 0
+
     # Process one by one
     for idx in tqdm(unprocessed_indices, desc="Processing examples"):
         try:
@@ -467,6 +475,16 @@ def run_benchmark(dataset_name, output_file='results.csv', checkpoint_file='chec
 
                 # Skip to next example
                 continue
+
+            # Smart rate limiting: wait only if needed
+            if last_request_time is not None:
+                elapsed = time.time() - last_request_time
+                if elapsed < min_time_between_requests:
+                    wait_time = min_time_between_requests - elapsed
+                    time.sleep(wait_time)
+
+            # Record request start time
+            last_request_time = time.time()
 
             # Run inference via API
             model_answer, explanation, full_response = run_inference_single(example)
@@ -513,16 +531,16 @@ def run_benchmark(dataset_name, output_file='results.csv', checkpoint_file='chec
             }
             results.append(result)
             processed_indices.add(idx)
+            examples_since_last_save += 1
 
             # Save checkpoint after each example
             save_checkpoint(checkpoint_file, processed_indices, results, problematic_indices)
 
-            # Save intermediate CSV
-            df = pd.DataFrame(results)
-            df.to_csv(output_file, index=False)
-
-            # Small delay to respect rate limits (30 req/min = 2s between requests)
-            time.sleep(2.1)
+            # Save CSV periodically (every N examples) instead of every time
+            if examples_since_last_save >= csv_save_interval:
+                df = pd.DataFrame(results)
+                df.to_csv(output_file, index=False)
+                examples_since_last_save = 0
 
         except Exception as e:
             # General error during processing
