@@ -137,6 +137,7 @@ def extract_video_frames(video_path, num_frames=8):
 def prepare_groq_messages(example, media_type, frames=None):
     """
     Prepare message format for Groq API with structured output.
+    Uses separate system and user messages for Llama 4 Maverick.
 
     Args:
         example: Single example from dataset
@@ -149,8 +150,8 @@ def prepare_groq_messages(example, media_type, frames=None):
     question = example['question']
     answer_choices = example['answer_choices']
 
-    # Build structured prompt
-    prompt = f"{question}\n\n"
+    # Build user prompt (system instructions are in separate system message)
+    prompt = f"Question: {question}\n\n"
 
     # Add answer choices
     if answer_choices and len(answer_choices) > 0:
@@ -159,11 +160,7 @@ def prepare_groq_messages(example, media_type, frames=None):
             prompt += f"- {choice}\n"
         prompt += "\n"
 
-    # Add instruction for structured response
-    prompt += "Instructions:\n"
-    prompt += "1. First line: Provide ONLY your answer exactly as it appears in the options above (e.g., 'A', 'Yes', 'X axis', etc.). Do NOT add any other text on this line.\n"
-    prompt += "2. Second line onwards: Provide a brief summary (1-2 sentences) explaining your reasoning.\n\n"
-    prompt += "Answer:"
+    prompt += "Provide your answer following the format rules:"
 
     # Format message based on media type
     content = []
