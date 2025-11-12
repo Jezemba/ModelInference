@@ -297,7 +297,7 @@ def initialize_model(model_name="OpenGVLab/InternVL3_5-1B-Instruct"):
         model_name,
         torch_dtype=torch.bfloat16,
         low_cpu_mem_usage=True,
-        use_flash_attn=False,  # Set to False to avoid CUDA device detection issues
+        use_flash_attn=True,
         trust_remote_code=True,
         device_map="auto"
     ).eval()
