@@ -364,7 +364,11 @@ def prepare_prompt(example):
             prompt += f"- {choice}\n"
         prompt += "\n"
 
-    prompt += "Your answer:\n"
+    # Add instruction for structured response
+    prompt += "Instructions:\n"
+    prompt += "1. First line: Provide ONLY your answer exactly as it appears in the options above (e.g., 'A', 'Yes', 'X axis', etc.). Do NOT add any other text on this line.\n"
+    prompt += "2. Second line onwards: Provide a brief summary (1-2 sentences) explaining your reasoning.\n\n"
+    prompt += "Answer:"
 
     return prompt
 
@@ -472,8 +476,8 @@ def run_inference_single(model, tokenizer, example):
                     )
                     pixel_values = pixel_values.to(torch.bfloat16).cuda()
 
-            # Generation config
-            generation_config = dict(max_new_tokens=512, do_sample=False)
+            # Generation config - deterministic with max_tokens=4096
+            generation_config = dict(max_new_tokens=4096, do_sample=False)
 
             # Generate response
             with torch.no_grad():
