@@ -441,7 +441,18 @@ def run_benchmark(dataset_name, output_file='results_groq.csv', checkpoint_file=
         """Worker function to process a single example"""
         nonlocal correct, total, failed_answers
 
-        example = dataset[idx]
+        try:
+            # Try to load the example - may fail if image is corrupted
+            example = dataset[idx]
+        except (OSError, Exception) as e:
+            print(f"\n⚠️  Skipping example {idx}: Corrupted or invalid image data ({str(e)[:50]})")
+            with results_lock:
+                processed_indices.add(idx)  # Mark as processed to skip in future runs
+                # Save checkpoint to avoid retrying this example
+                checkpoint_counter[0] += 1
+                if checkpoint_counter[0] % 10 == 0:
+                    save_checkpoint(checkpoint_file, processed_indices, results)
+            return False
 
         try:
             # Run inference via Groq API
