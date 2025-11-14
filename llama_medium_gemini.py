@@ -423,7 +423,16 @@ def run_benchmark(dataset_name, output_file='results_gemini.csv', checkpoint_fil
 
     # Process one by one
     for idx in tqdm(unprocessed_indices, desc="Processing examples"):
-        example = dataset[idx]
+        try:
+            # Try to load the example - may fail if image is corrupted
+            example = dataset[idx]
+        except (OSError, Exception) as e:
+            print(f"\n⚠️  Skipping example {idx}: Corrupted or invalid image data ({str(e)[:50]})")
+            processed_indices.add(idx)  # Mark as processed to skip in future runs
+            # Save checkpoint to avoid retrying this example
+            if len(processed_indices) % 10 == 0:
+                save_checkpoint(checkpoint_file, processed_indices, results)
+            continue
 
         try:
             # Run inference via Gemini API

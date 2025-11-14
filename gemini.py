@@ -244,7 +244,7 @@ def run_inference_single(model, example, num_video_frames=8):
         # Call Gemini API with generation config for deterministic output
         generation_config = genai.types.GenerationConfig(
             temperature=0.0,  # Deterministic for evaluation
-            max_output_tokens=2048,  # Increased to handle longer explanations
+            max_output_tokens=4096,  # Increased to handle longer explanations
         )
 
         # Set safety settings to be less restrictive for benchmark evaluation
@@ -602,7 +602,7 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="Run Gemini VQA Benchmark")
-    parser.add_argument("--dataset_name", type=str, default="JessicaE/OpenSeeSimE-Structural-Test",
+    parser.add_argument("--dataset_name", type=str, default="JessicaE/OpenSeeSimE-Structural",
                         help="HuggingFace dataset name")
     parser.add_argument("--output_file", type=str, default="gemini_benchmark_results.csv",
                         help="CSV output file")
@@ -612,7 +612,7 @@ if __name__ == "__main__":
                         help="Gemini model to use")
     parser.add_argument("--num_video_frames", type=int, default=8,
                         help="Number of frames to extract for video examples")
-    parser.add_argument("--media_type", type=str, default="all", choices=["all", "image", "video"],
+    parser.add_argument("--media_type", type=str, default="image", choices=["all", "image", "video"],
                         help="Filter dataset by media type")
     parser.add_argument("--max_workers", type=int, default=5,
                         help="Number of concurrent threads for parallel API calls (default: 5)")
