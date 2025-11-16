@@ -9,6 +9,7 @@ import pickle
 import shutil
 import tempfile
 import argparse
+import time
 
 # ================================================================
 #                MODEL HELPER FUNCTIONS
@@ -171,6 +172,8 @@ def run_benchmark(
             prompt += "Answer:"
 
             try:
+                start_time = time.time()
+
                 # Get video directly from HuggingFace dataset
                 video = example['video']
 
@@ -237,14 +240,14 @@ def run_benchmark(
                     )
 
                 # === Build messages ===
-                # Match the format from qwen_video_model.py (no "type" field for video)
+                # Optimized settings for faster processing
                 messages = [
                     {"role": "user", "content": [
                         {"video": video_path,
-                         "total_pixels": 20480 * 32 * 32,
-                         "min_pixels": 64 * 32 * 32,
-                         "max_frames": 2048,
-                         "sample_fps": 29},
+                         "total_pixels": 128 * 28 * 28,  # Reduced from 20480*32*32
+                         "min_pixels": 64 * 28 * 28,     # Reduced from 64*32*32
+                         "max_frames": 256,              # Reduced from 2048
+                         "sample_fps": 1.0},             # Reduced from 29
                         {"type": "text", "text": prompt}
                     ]}
                 ]
@@ -276,7 +279,14 @@ def run_benchmark(
 
                 # === Generate ===
                 with torch.no_grad():
-                    output_ids = model.generate(**inputs, max_new_tokens=512)
+                    output_ids = model.generate(
+                        **inputs,
+                        max_new_tokens=128,  # Reduced from 512 for speed
+                        do_sample=False      # Greedy decoding for speed
+                    )
+
+                # Clear GPU cache after each generation
+                torch.cuda.empty_cache()
 
                 generated_ids = [
                     output_ids[len(input_ids):]
@@ -294,6 +304,9 @@ def run_benchmark(
                     correct += 1
                 total += 1
 
+                # Calculate processing time
+                processing_time = time.time() - start_time
+
                 result = {
                     "file_name": file_name,
                     "source_file": example.get("source_file", ""),
@@ -307,14 +320,20 @@ def run_benchmark(
                     "model_answer": model_answer if model_answer else "None",
                     "explanation": explanation,
                     "correct": is_correct,
-                    "media_type": example["media_type"]
+                    "media_type": example["media_type"],
+                    "processing_time": processing_time
                 }
 
                 results.append(result)
                 processed_indices.add(idx)
 
-                # Save checkpoint periodically
-                if len(processed_indices) % 5 == 0:
+                # Print timing every 10 examples
+                if len(processed_indices) % 10 == 0:
+                    avg_time = sum(r.get("processing_time", 0) for r in results[-10:]) / min(10, len(results))
+                    print(f"\n⏱️  Avg time (last 10): {avg_time:.1f}s | Accuracy: {correct}/{total} = {correct/total:.1%}")
+
+                # Save checkpoint more frequently (every 2 examples instead of 5)
+                if len(processed_indices) % 2 == 0:
                     save_checkpoint(checkpoint_file, processed_indices, results)
                     pd.DataFrame(results).to_csv(output_file, index=False)
 
