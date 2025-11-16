@@ -190,6 +190,14 @@ def run_benchmark(
                 elif hasattr(video, 'filename'):
                     # Some video objects use filename
                     video_path = video.filename
+                elif hasattr(video, '_hf_encoded'):
+                    # torchcodec VideoDecoder from HuggingFace datasets
+                    # Save the encoded video to a temporary file
+                    video_path = os.path.join(temp_dir, f"temp_video_{idx}.mp4")
+                    with open(video_path, 'wb') as f:
+                        f.write(video._hf_encoded)
+                    if idx == 0:
+                        print(f"✅ Saved VideoDecoder to temp file: {video_path}")
                 else:
                     # Unknown format - print info and raise error
                     print(f"❌ Unexpected video type: {type(video)}")
