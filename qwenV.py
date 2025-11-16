@@ -174,10 +174,36 @@ def run_benchmark(
                 # Get video directly from HuggingFace dataset
                 video = example['video']
 
+                # Debug: print video type for first example
+                if idx == 0:
+                    print(f"🔍 Video object type: {type(video)}")
+                    if hasattr(video, '__dict__'):
+                        print(f"🔍 Video attributes: {list(vars(video).keys())}")
+
+                # Extract video path from various possible formats
+                if isinstance(video, str):
+                    # Already a string path (most common case)
+                    video_path = video
+                elif hasattr(video, 'path'):
+                    # VideoDecoder or similar with path attribute
+                    video_path = video.path
+                elif hasattr(video, 'filename'):
+                    # Some video objects use filename
+                    video_path = video.filename
+                else:
+                    # Unknown format - print info and raise error
+                    print(f"❌ Unexpected video type: {type(video)}")
+                    print(f"   Available attributes: {dir(video)}")
+                    raise ValueError(
+                        f"Cannot extract video path from type {type(video)}. "
+                        "Please check the dataset video format."
+                    )
+
                 # === Build messages ===
+                # Match the format from qwen_video_model.py (no "type" field for video)
                 messages = [
                     {"role": "user", "content": [
-                        {"video": video,
+                        {"video": video_path,
                          "total_pixels": 20480 * 32 * 32,
                          "min_pixels": 64 * 32 * 32,
                          "max_frames": 2048,
