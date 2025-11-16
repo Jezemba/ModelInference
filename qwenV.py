@@ -192,12 +192,41 @@ def run_benchmark(
                     video_path = video.filename
                 elif hasattr(video, '_hf_encoded'):
                     # torchcodec VideoDecoder from HuggingFace datasets
-                    # Save the encoded video to a temporary file
-                    video_path = os.path.join(temp_dir, f"temp_video_{idx}.mp4")
-                    with open(video_path, 'wb') as f:
-                        f.write(video._hf_encoded)
+                    # The _hf_encoded is a dict, need to extract the bytes
                     if idx == 0:
-                        print(f"✅ Saved VideoDecoder to temp file: {video_path}")
+                        print(f"🔍 _hf_encoded type: {type(video._hf_encoded)}")
+                        print(f"🔍 _hf_encoded keys: {video._hf_encoded.keys() if isinstance(video._hf_encoded, dict) else 'Not a dict'}")
+
+                    # Extract video bytes from the dict
+                    if isinstance(video._hf_encoded, dict):
+                        # Common keys: 'bytes', 'path', 'content', etc.
+                        video_bytes = None
+                        if 'bytes' in video._hf_encoded:
+                            video_bytes = video._hf_encoded['bytes']
+                        elif 'content' in video._hf_encoded:
+                            video_bytes = video._hf_encoded['content']
+                        elif 'path' in video._hf_encoded:
+                            # If there's a path, use it directly
+                            video_path = video._hf_encoded['path']
+                            if idx == 0:
+                                print(f"✅ Using video path from _hf_encoded: {video_path}")
+                        else:
+                            print(f"❌ Unknown _hf_encoded structure: {video._hf_encoded}")
+                            raise ValueError(f"Cannot extract video from _hf_encoded dict with keys: {video._hf_encoded.keys()}")
+
+                        if video_bytes:
+                            video_path = os.path.join(temp_dir, f"temp_video_{idx}.mp4")
+                            with open(video_path, 'wb') as f:
+                                f.write(video_bytes)
+                            if idx == 0:
+                                print(f"✅ Saved VideoDecoder bytes to temp file: {video_path}")
+                    else:
+                        # If it's not a dict, try to write it directly
+                        video_path = os.path.join(temp_dir, f"temp_video_{idx}.mp4")
+                        with open(video_path, 'wb') as f:
+                            f.write(video._hf_encoded)
+                        if idx == 0:
+                            print(f"✅ Saved VideoDecoder to temp file: {video_path}")
                 else:
                     # Unknown format - print info and raise error
                     print(f"❌ Unexpected video type: {type(video)}")
