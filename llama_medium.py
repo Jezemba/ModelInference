@@ -424,8 +424,16 @@ def run_benchmark(dataset_name, output_file='results.csv', checkpoint_file='chec
     
     # Process one by one
     for idx in tqdm(unprocessed_indices, desc="Processing examples"):
-        example = dataset[idx]
-        
+        try:
+            # Try to load the example - may fail if image is corrupted
+            example = dataset[idx]
+        except (OSError, Exception) as e:
+            print(f"\n⚠️  Skipping example {idx}: Corrupted or invalid image data ({str(e)[:50]})")
+            processed_indices.add(idx)  # Mark as processed to skip in future runs
+            # Save checkpoint to avoid retrying this example
+            save_checkpoint(checkpoint_file, processed_indices, results)
+            continue
+
         try:
             # Run inference
             model_answer, explanation, full_response = run_inference_single(
