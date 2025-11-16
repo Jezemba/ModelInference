@@ -240,14 +240,14 @@ def run_benchmark(
                     )
 
                 # === Build messages ===
-                # Optimized settings for faster processing
+                # Fair benchmark settings (comparable to gemma.py's 32 frames)
                 messages = [
                     {"role": "user", "content": [
                         {"video": video_path,
-                         "total_pixels": 128 * 28 * 28,  # Reduced from 20480*32*32
-                         "min_pixels": 64 * 28 * 28,     # Reduced from 64*32*32
-                         "max_frames": 256,              # Reduced from 2048
-                         "sample_fps": 1.0},             # Reduced from 29
+                         "total_pixels": 360 * 420,      # Moderate resolution
+                         "min_pixels": 128 * 28 * 28,    # Min quality threshold
+                         "max_frames": 64,               # ~2x gemma's 32 frames for native video advantage
+                         "sample_fps": 2.0},             # 2 fps sampling
                         {"type": "text", "text": prompt}
                     ]}
                 ]
@@ -281,8 +281,8 @@ def run_benchmark(
                 with torch.no_grad():
                     output_ids = model.generate(
                         **inputs,
-                        max_new_tokens=128,  # Reduced from 512 for speed
-                        do_sample=False      # Greedy decoding for speed
+                        max_new_tokens=512,  # Match gemma.py baseline
+                        do_sample=False      # Greedy decoding for consistency
                     )
 
                 # Clear GPU cache after each generation
