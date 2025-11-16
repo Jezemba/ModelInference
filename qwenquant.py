@@ -6,179 +6,14 @@ import pandas as pd
 import torch
 from datasets import load_dataset
 from tqdm import tqdm
-import tempfile
 import pickle
-import shutil
-import base64
-from io import BytesIO
-import cv2
-import numpy as np
 from PIL import Image
-from huggingface_hub import hf_hub_download
-from llama_cpp import Llama
-from llama_cpp.llama_chat_format import Llava15ChatHandler
+from unsloth import FastVisionModel
+from transformers import TextStreamer
 
-### IMPORTANT: This script processes datasets using quantized GGUF models from unsloth.
-### Use --quant to select quantization level: 2bit, 4bit, 8bit, or 16bit
-
-# Map quantization levels to GGUF file suffixes
-QUANT_MAP = {
-    "2bit": "Q2_K",
-    "4bit": "Q4_K_M",
-    "8bit": "Q8_0",
-    "16bit": "F16"
-}
-
-def extract_frames_from_video(video_path_or_decoder, num_frames=32, temp_dir=None):
-    """
-    Extract frames from video path or VideoDecoder object.
-
-    Args:
-        video_path_or_decoder: Path to video file or VideoDecoder object
-        num_frames: Number of frames to extract
-        temp_dir: Temporary directory for processing
-
-    Returns:
-        List of base64-encoded frames
-    """
-    try:
-        # Check if input is a VideoDecoder object
-        from torchcodec.decoders import VideoDecoder
-        if isinstance(video_path_or_decoder, VideoDecoder):
-            frames = extract_frames_from_videodecoder(video_path_or_decoder, num_frames)
-        else:
-            # Regular video file path
-            frames = extract_video_frames(video_path_or_decoder, num_frames)
-
-        # Convert frames to base64
-        base64_frames = [encode_image_to_base64(frame) for frame in frames]
-        return base64_frames
-    except Exception as e:
-        print(f"Error extracting frames: {e}")
-        return None
-
-def extract_frames_from_videodecoder(video_decoder, num_frames=32):
-    """
-    Extract frames from a VideoDecoder object.
-
-    Args:
-        video_decoder: torchcodec VideoDecoder object
-        num_frames: Number of frames to extract
-
-    Returns:
-        List of PIL Image objects
-    """
-    total_frames = len(video_decoder)
-
-    # Calculate middle frame
-    middle_frame = total_frames // 2
-
-    # Generate frame indices with middle frame guaranteed
-    if num_frames % 2 == 1:
-        # Odd number: sample symmetrically around middle
-        half_segments = num_frames // 2
-        indices_before = np.linspace(0, middle_frame - 1, half_segments, dtype=int)
-        indices_after = np.linspace(middle_frame + 1, total_frames - 1, half_segments, dtype=int)
-        frame_indices = np.concatenate([indices_before, [middle_frame], indices_after])
-    else:
-        # Even number: force middle frame at position num_frames//2
-        half_segments = num_frames // 2
-        if half_segments > 1:
-            indices_before = np.linspace(0, middle_frame - 1, half_segments - 1, dtype=int)
-        else:
-            indices_before = np.array([], dtype=int)
-        indices_after = np.linspace(middle_frame + 1, total_frames - 1, half_segments, dtype=int)
-        frame_indices = np.concatenate([indices_before, [middle_frame], indices_after])
-
-    # Ensure we have exactly num_frames
-    frame_indices = frame_indices[:num_frames]
-
-    # Extract frames as PIL Images
-    frames = []
-    for idx in frame_indices:
-        # Get tensor frame
-        tensor_frame = video_decoder[int(idx)]
-        # Convert to PIL
-        frame_np = tensor_frame.permute(1, 2, 0).cpu().numpy()
-        pil_image = Image.fromarray(frame_np.astype(np.uint8))
-        frames.append(pil_image)
-
-    return frames
-
-def extract_video_frames(video_path, num_frames=32):
-    """
-    Extract uniformly sampled frames from video, ensuring middle frame is included.
-
-    Args:
-        video_path: Path to video file
-        num_frames: Number of frames to extract (default: 32)
-
-    Returns:
-        List of PIL Image objects
-    """
-    cap = cv2.VideoCapture(video_path)
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-
-    if total_frames == 0:
-        cap.release()
-        raise ValueError(f"Could not read video: {video_path}")
-
-    # Calculate middle frame
-    middle_frame = total_frames // 2
-
-    # Generate frame indices with middle frame guaranteed
-    if num_frames % 2 == 1:
-        # Odd number: sample symmetrically around middle
-        half_segments = num_frames // 2
-        indices_before = np.linspace(0, middle_frame - 1, half_segments, dtype=int)
-        indices_after = np.linspace(middle_frame + 1, total_frames - 1, half_segments, dtype=int)
-        frame_indices = np.concatenate([indices_before, [middle_frame], indices_after])
-    else:
-        # Even number: force middle frame at position num_frames//2
-        half_segments = num_frames // 2
-        if half_segments > 1:
-            indices_before = np.linspace(0, middle_frame - 1, half_segments - 1, dtype=int)
-        else:
-            indices_before = np.array([], dtype=int)
-        indices_after = np.linspace(middle_frame + 1, total_frames - 1, half_segments, dtype=int)
-        frame_indices = np.concatenate([indices_before, [middle_frame], indices_after])
-
-    # Ensure we have exactly num_frames
-    frame_indices = frame_indices[:num_frames]
-
-    # Extract frames and save to files
-    frames = []
-    for idx in frame_indices:
-        # Set position
-        cap.set(cv2.CAP_PROP_POS_FRAMES, int(idx))
-
-        # Read frame
-        ret, frame = cap.read()
-        if ret:
-            # Convert BGR to RGB
-            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-
-            # Convert to PIL
-            pil_image = Image.fromarray(frame_rgb)
-            frames.append(pil_image)
-
-    cap.release()
-    return frames
-
-def encode_image_to_base64(image):
-    """
-    Convert a PIL Image to base64-encoded string.
-
-    Args:
-        image: PIL Image object
-
-    Returns:
-        str: base64-encoded image string with data URI scheme
-    """
-    buffered = BytesIO()
-    image.save(buffered, format="PNG")
-    encoded_image = base64.b64encode(buffered.getvalue()).decode("utf-8")
-    return f"data:image/png;base64,{encoded_image}"
+### IMPORTANT: This script processes image datasets using quantized Qwen3-VL models via unsloth.
+### Use --quant to select quantization level: 4bit, 8bit, or 16bit
+### Only processes images (videos are not supported)
 
 def build_system_prompt():
     """Build a system prompt to guide the model's behavior"""
@@ -364,95 +199,62 @@ def save_checkpoint(checkpoint_file, processed_indices, results, problematic_ind
     with open(checkpoint_file, 'wb') as f:
         pickle.dump(checkpoint_data, f)
 
-def download_quantized_model(quant_level, cache_dir="./models"):
+def load_quantized_model(quant_level):
     """
-    Download the appropriate GGUF model file from HuggingFace.
+    Load quantized Qwen3-VL model using unsloth.
 
     Args:
-        quant_level: Quantization level (2bit, 4bit, 8bit, 16bit)
-        cache_dir: Directory to cache downloaded models
+        quant_level: Quantization level (4bit, 8bit, 16bit)
 
     Returns:
-        Path to downloaded model file
+        tuple: (model, tokenizer)
     """
-    if quant_level not in QUANT_MAP:
-        raise ValueError(f"Invalid quantization level: {quant_level}. Choose from: {list(QUANT_MAP.keys())}")
+    print(f"\n🔧 Loading Qwen3-VL-8B-Instruct with {quant_level} quantization...")
 
-    quant_suffix = QUANT_MAP[quant_level]
-    repo_id = "unsloth/Qwen3-VL-8B-Instruct-GGUF"
+    # Map quantization level to unsloth parameters
+    if quant_level == "4bit":
+        load_in_4bit = True
+        load_in_8bit = False
+    elif quant_level == "8bit":
+        load_in_4bit = False
+        load_in_8bit = True
+    elif quant_level == "16bit":
+        load_in_4bit = False
+        load_in_8bit = False
+    else:
+        raise ValueError(f"Invalid quantization level: {quant_level}. Choose from: 4bit, 8bit, 16bit")
 
-    # Construct filename based on typical unsloth naming pattern
-    filename = f"qwen3-vl-8b-instruct-{quant_suffix.lower()}.gguf"
-
-    print(f"\n📥 Downloading {quant_level} quantized model ({quant_suffix})...")
-    print(f"   Repository: {repo_id}")
-    print(f"   File: {filename}")
-
-    try:
-        model_path = hf_hub_download(
-            repo_id=repo_id,
-            filename=filename,
-            cache_dir=cache_dir
-        )
-        print(f"   ✅ Model downloaded to: {model_path}")
-        return model_path
-    except Exception as e:
-        print(f"   ❌ Error downloading model: {e}")
-        raise
-
-def load_quantized_model(model_path, n_ctx=2048, n_gpu_layers=-1):
-    """
-    Load a quantized GGUF model using llama-cpp-python.
-
-    Args:
-        model_path: Path to GGUF model file
-        n_ctx: Context window size
-        n_gpu_layers: Number of layers to offload to GPU (-1 = all)
-
-    Returns:
-        Llama model instance
-    """
-    print(f"\n🔧 Loading model from: {model_path}")
-    print(f"   Context size: {n_ctx}")
-    print(f"   GPU layers: {n_gpu_layers}")
-
-    # For vision models, we need to use a chat handler that supports images
-    # Note: llama-cpp-python's vision support is still evolving
-    # This is a basic setup - may need adjustments based on the model
-    model = Llama(
-        model_path=model_path,
-        n_ctx=n_ctx,
-        n_gpu_layers=n_gpu_layers,
-        verbose=False
+    # Load model using unsloth
+    model, tokenizer = FastVisionModel.from_pretrained(
+        "unsloth/Qwen3-VL-8B-Instruct",
+        load_in_4bit=load_in_4bit,
+        load_in_8bit=load_in_8bit,
     )
 
+    # Prepare for inference
+    FastVisionModel.for_inference(model)
+
     print("   ✅ Model loaded successfully")
-    return model
+    return model, tokenizer
 
 def process_dataset(args):
     """
-    Process the dataset using quantized GGUF model.
+    Process the image dataset using quantized Qwen3-VL model.
     """
-    # Download and load the quantized model
-    model_path = download_quantized_model(args.quant, cache_dir=args.model_cache_dir)
-    model = load_quantized_model(
-        model_path,
-        n_ctx=args.n_ctx,
-        n_gpu_layers=args.n_gpu_layers
-    )
+    # Load the quantized model
+    model, tokenizer = load_quantized_model(args.quant)
 
     # Load dataset
     print(f"\n📚 Loading dataset: {args.dataset}")
     dataset = load_dataset(args.dataset, split=args.split, token=True)
     print(f"Total examples before filtering: {len(dataset)}")
 
-    # Filter by media type if specified
-    if args.media_type != 'all':
-        print(f"Filtering dataset for {args.media_type} examples only...")
-        media_types = dataset["media_type"]
-        filtered_indices = [i for i, mt in enumerate(media_types) if mt == args.media_type]
-        dataset = dataset.select(filtered_indices)
-        print(f"Remaining examples after filter: {len(dataset)}")
+    # Filter for images only
+    print(f"Filtering dataset for image examples only...")
+    media_types = dataset["media_type"]
+    filtered_indices = [i for i, mt in enumerate(media_types) if mt == 'image']
+    dataset = dataset.select(filtered_indices)
+    print(f"Remaining image examples: {len(dataset)}")
 
     # Limit examples if requested
     if args.max_examples is not None and args.max_examples > 0 and args.max_examples < len(dataset):
@@ -492,14 +294,11 @@ def process_dataset(args):
     print(f"   Problematic examples to skip: {len(problematic_indices)}")
     print(f"   Remaining: {len(dataset) - len(processed_indices) - len(problematic_indices)}")
 
-    # Create temporary directory for processing if needed
-    temp_dir = tempfile.mkdtemp(prefix="qwen_quant_tmp_")
-
     try:
         # Process examples in order
         for idx in tqdm(unprocessed_indices, desc="Processing examples"):
             try:
-                # Try to access the example - this is where errors might occur
+                # Try to access the example
                 try:
                     example = dataset[idx]
                 except Exception as e:
@@ -520,7 +319,8 @@ def process_dataset(args):
                     # Skip to next example
                     continue
 
-                media_type = example['media_type']
+                # Get image (PIL Image object)
+                image = example['image']
 
                 # Prepare prompts
                 question = example['question']
@@ -528,46 +328,51 @@ def process_dataset(args):
                 user_prompt = prepare_user_prompt(question, answer_choices)
                 system_prompt = build_system_prompt()
 
-                # Note: Vision support in llama-cpp-python is limited
-                # For now, we'll process text-only. Full multimodal support
-                # requires additional integration work with the GGUF format
+                # Build message in the format expected by Qwen3-VL
+                # Combine system prompt with user prompt
+                full_text_prompt = f"{system_prompt}\n\n{user_prompt}"
 
-                # For image/video examples, we'll skip them for now
-                # This is a limitation of the current GGUF implementation
-                if media_type == 'image':
-                    print(f"\n⚠️  Image support not yet implemented for GGUF models - skipping example {idx}")
-                    problematic_indices.add(idx)
-                    with open(problematic_log, 'a') as log:
-                        log.write(f"{idx}: Image modality not supported in GGUF version\n")
-                    save_checkpoint(args.checkpoint, processed_indices, results, problematic_indices)
-                    continue
-                elif media_type == 'video':
-                    print(f"\n⚠️  Video support not yet implemented for GGUF models - skipping example {idx}")
-                    problematic_indices.add(idx)
-                    with open(problematic_log, 'a') as log:
-                        log.write(f"{idx}: Video modality not supported in GGUF version\n")
-                    save_checkpoint(args.checkpoint, processed_indices, results, problematic_indices)
-                    continue
+                messages = [
+                    {"role": "user", "content": [
+                        {"type": "image"},
+                        {"type": "text", "text": full_text_prompt}
+                    ]}
+                ]
 
-                # Create prompt for text-only processing
-                full_prompt = f"{system_prompt}\n\n{user_prompt}"
+                # Apply chat template
+                input_text = tokenizer.apply_chat_template(
+                    messages,
+                    add_generation_prompt=True
+                )
+
+                # Tokenize image + text
+                inputs = tokenizer(
+                    image,
+                    input_text,
+                    add_special_tokens=False,
+                    return_tensors="pt",
+                ).to(model.device)
 
                 # Start timing
                 start_time = time.time()
 
-                # Generate response using llama-cpp-python
-                response = model(
-                    full_prompt,
-                    max_tokens=args.max_tokens,
-                    temperature=args.temperature,
-                    stop=["Question:", "\n\n\n"]
-                )
+                # Generate response
+                with torch.no_grad():
+                    output_ids = model.generate(
+                        **inputs,
+                        max_new_tokens=args.max_tokens,
+                        use_cache=True,
+                        temperature=args.temperature,
+                        min_p=0.1,
+                    )
 
                 # Calculate inference time
                 inference_time = time.time() - start_time
 
-                # Get response text
-                output_text = response['choices'][0]['text']
+                # Decode output
+                # Remove input tokens to get only the generated text
+                generated_ids = output_ids[0][len(inputs.input_ids[0]):]
+                output_text = tokenizer.decode(generated_ids, skip_special_tokens=True)
 
                 # Parse and evaluate response
                 model_answer, explanation = parse_model_response(output_text, answer_choices)
@@ -610,7 +415,7 @@ def process_dataset(args):
                     'model_answer': model_answer if model_answer is not None else 'None',
                     'explanation': explanation,
                     'correct': is_correct,
-                    'media_type': media_type,
+                    'media_type': 'image',
                     'inference_time': inference_time
                 }
                 results.append(result)
@@ -677,60 +482,48 @@ def process_dataset(args):
         print("="*80)
 
     finally:
-        # Clean up temp directory
-        if os.path.exists(temp_dir):
-            shutil.rmtree(temp_dir)
+        # Clean up GPU memory
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Qwen3-VL Quantized GGUF Model Processing",
+        description="Qwen3-VL Quantized Model Processing (Images Only)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Process dataset with 2-bit quantization
-  python qwenquant.py --quant 2bit --media-type image
+  # Process dataset with 4-bit quantization (recommended)
+  python qwenquant.py --quant 4bit
 
-  # Process dataset with 4-bit quantization
-  python qwenquant.py --quant 4bit --media-type video
+  # Process dataset with 8-bit quantization (higher quality)
+  python qwenquant.py --quant 8bit
 
-  # Process dataset with 8-bit quantization
-  python qwenquant.py --quant 8bit --media-type all
+  # Process with 16-bit (highest quality, FP16)
+  python qwenquant.py --quant 16bit
 
-  # Process with 16-bit (highest quality)
-  python qwenquant.py --quant 16bit --media-type all
+  # Limit to 100 examples
+  python qwenquant.py --quant 4bit --max-examples 100
         """
     )
 
     # Quantization level selection (REQUIRED)
     parser.add_argument("--quant", type=str, required=True,
-                       choices=['2bit', '4bit', '8bit', '16bit'],
-                       help="Quantization level: 2bit, 4bit, 8bit, or 16bit")
-
-    # Model parameters
-    parser.add_argument("--model-cache-dir", type=str, default="./models",
-                       help="Directory to cache downloaded models")
-    parser.add_argument("--n-ctx", type=int, default=2048,
-                       help="Context window size for the model")
-    parser.add_argument("--n-gpu-layers", type=int, default=-1,
-                       help="Number of layers to offload to GPU (-1 = all)")
+                       choices=['4bit', '8bit', '16bit'],
+                       help="Quantization level: 4bit, 8bit, or 16bit")
 
     # Dataset processing parameters
     parser.add_argument("--dataset", type=str, default="JessicaE/OpenSeeSimE-Structural",
                        help="Dataset name on Hugging Face")
     parser.add_argument("--split", type=str, default="test",
                        help="Dataset split to use")
-    parser.add_argument("--media-type", type=str, choices=['video', 'image', 'all'], default='all',
-                       help="Filter by media type: 'image', 'video', or 'all'")
     parser.add_argument("--max-examples", type=int, default=0,
                        help="Maximum number of examples to process (0 = all)")
 
     # Model inference parameters
-    parser.add_argument("--max-tokens", type=int, default=512,
+    parser.add_argument("--max-tokens", type=int, default=256,
                        help="Maximum number of tokens to generate")
-    parser.add_argument("--temperature", type=float, default=0.0,
+    parser.add_argument("--temperature", type=float, default=1.0,
                        help="Temperature for sampling")
-    parser.add_argument("--num-frames", type=int, default=32,
-                       help="Number of frames to extract from videos")
 
     # Output parameters
     parser.add_argument("--output", type=str, default=None,
@@ -744,10 +537,10 @@ Examples:
 
     # Auto-generate output and checkpoint filenames
     if args.output is None:
-        args.output = f"qwen3_vl_8b_{args.quant}_{args.media_type}_results.csv"
+        args.output = f"qwen3_vl_8b_{args.quant}_image_results.csv"
 
     if args.checkpoint is None:
-        args.checkpoint = f"qwen3_vl_8b_{args.quant}_{args.media_type}_checkpoint.pkl"
+        args.checkpoint = f"qwen3_vl_8b_{args.quant}_image_checkpoint.pkl"
 
     # Convert max_examples to None if 0
     if args.max_examples == 0:
@@ -755,12 +548,12 @@ Examples:
 
     # Print configuration
     print("\n" + "="*80)
-    print("QWEN3-VL QUANTIZED MODEL - DATASET PROCESSING")
+    print("QWEN3-VL QUANTIZED MODEL - IMAGE DATASET PROCESSING")
     print("="*80)
-    print(f"Model: Qwen3-VL-8B-Instruct")
-    print(f"Quantization: {args.quant} ({QUANT_MAP[args.quant]})")
+    print(f"Model: Qwen3-VL-8B-Instruct (via unsloth)")
+    print(f"Quantization: {args.quant}")
     print(f"Dataset: {args.dataset}")
-    print(f"Media Type Filter: {args.media_type}")
+    print(f"Media Type: Images only")
     print(f"Output File: {args.output}")
     print(f"Checkpoint File: {args.checkpoint}")
     print("="*80 + "\n")
