@@ -386,13 +386,39 @@ def run_benchmark(dataset_name, split="test", output_csv="gptV_results.csv",
     # Check for existing results to resume from (CSV-based checkpointing)
     processed_indices = set()
     old_results = []
+
+    # Check for final output file
     if os.path.exists(output_csv):
         print(f"\n📂 Found existing results file: {output_csv}")
         old_df = pd.read_csv(output_csv)
         if "idx" in old_df.columns:
             processed_indices = set(old_df["idx"].values)
             old_results = old_df.to_dict('records')
-            print(f"   Resuming from checkpoint: {len(processed_indices)} examples already processed")
+            print(f"   Loaded {len(processed_indices)} completed examples from {output_csv}")
+
+    # Also check for any worker CSV files from interrupted runs
+    worker_files = []
+    for w in range(100):  # Check up to 100 workers
+        worker_csv = f"gptV_results_worker_{w}.csv"
+        if os.path.exists(worker_csv):
+            worker_files.append(worker_csv)
+
+    if worker_files:
+        print(f"\n📂 Found {len(worker_files)} worker checkpoint files from previous run")
+        for wf in worker_files:
+            try:
+                wf_df = pd.read_csv(wf)
+                if "idx" in wf_df.columns:
+                    new_indices = set(wf_df["idx"].values) - processed_indices
+                    if new_indices:
+                        processed_indices.update(new_indices)
+                        old_results.extend(wf_df.to_dict('records'))
+                        print(f"   Loaded {len(new_indices)} additional examples from {wf}")
+            except Exception as e:
+                print(f"   Warning: Could not load {wf}: {e}")
+
+    if processed_indices:
+        print(f"   Total resuming from checkpoint: {len(processed_indices)} examples already processed")
 
     # Get unprocessed indices
     all_indices = list(range(total))
@@ -435,6 +461,14 @@ def run_benchmark(dataset_name, split="test", output_csv="gptV_results.csv",
             all_dfs = new_dfs
 
         all_df = pd.concat(all_dfs, ignore_index=True) if all_dfs else pd.DataFrame()
+
+        # Clean up worker files after successful merge
+        for worker_csv in worker_csvs:
+            try:
+                if os.path.exists(worker_csv):
+                    os.remove(worker_csv)
+            except Exception as e:
+                print(f"   Warning: Could not remove {worker_csv}: {e}")
 
     # Save final results
     all_df.to_csv(output_csv, index=False)
