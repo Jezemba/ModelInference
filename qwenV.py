@@ -151,7 +151,19 @@ def run_benchmark(
             if idx in processed_indices:
                 continue
 
-            example = dataset[idx]
+            # Try to load the example - this is where video decoding happens
+            # and corrupted videos will fail
+            try:
+                example = dataset[idx]
+            except (RuntimeError, Exception) as e:
+                error_msg = str(e)
+                print(f"\n⚠️  Skipping corrupted video at index {idx}: {error_msg}")
+                # Mark as processed so we don't retry it
+                processed_indices.add(idx)
+                # Save checkpoint to persist the skip
+                save_checkpoint(checkpoint_file, processed_indices, results)
+                continue
+
             file_name = example["file_name"]
             question = example["question"]
             answer_choices = example["answer_choices"]
