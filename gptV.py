@@ -2,14 +2,15 @@
 # -*- coding: utf-8 -*-
 
 """
-GPT-5 VQA Video Benchmark (Fair Comparison with gemma.py)
-----------------------------------------------------------
+GPT-5 VQA Video Benchmark (Fair Comparison with gemma.py, Parallel)
+--------------------------------------------------------------------
 
 ✅ Uses: OpenAI Responses API (GPT-5-2025-08-07)
 ✅ Supports: Videos from HuggingFace dataset (no AWS)
 ✅ Fair benchmark: 32 frames, 512 max tokens (matching gemma.py)
 ✅ Output: CSV with results + timing info
-✅ Checkpointing: Resume from previous runs
+✅ Checkpointing: Resume from previous runs (CSV-based)
+✅ Parallel: --num_workers N (default = 1)
 """
 
 import os
@@ -22,8 +23,8 @@ import pandas as pd
 from tqdm import tqdm
 from datasets import load_dataset
 from PIL import Image
-import pickle
 import time
+from multiprocessing import Pool
 
 from openai import OpenAI
 import cv2
@@ -316,138 +317,22 @@ def run_single_example(example, num_video_frames=32):
 
 
 # -------------------------------------------------------------------
-# CHECKPOINT HELPERS
+# WORKER FUNCTION
 # -------------------------------------------------------------------
-def load_checkpoint(checkpoint_file):
-    """Load checkpoint if it exists."""
-    if os.path.exists(checkpoint_file):
-        print(f"\n📂 Loading checkpoint from {checkpoint_file}")
-        with open(checkpoint_file, 'rb') as f:
-            checkpoint_data = pickle.load(f)
-
-        processed_indices = checkpoint_data['processed_indices']
-        results = checkpoint_data['results']
-        problematic_indices = checkpoint_data.get('problematic_indices', set())
-
-        print(f"   Resuming from checkpoint: {len(processed_indices)} examples already processed")
-        if problematic_indices:
-            print(f"   Skipping {len(problematic_indices)} problematic files")
-
-        return processed_indices, results, problematic_indices
-    else:
-        return set(), [], set()
-
-
-def save_checkpoint(checkpoint_file, processed_indices, results, problematic_indices):
-    """Save checkpoint."""
-    checkpoint_data = {
-        'processed_indices': processed_indices,
-        'results': results,
-        'problematic_indices': problematic_indices
-    }
-    with open(checkpoint_file, 'wb') as f:
-        pickle.dump(checkpoint_data, f)
-
-
-# -------------------------------------------------------------------
-# MAIN DRIVER
-# -------------------------------------------------------------------
-def run_benchmark(dataset_name, split="test", output_csv="gptV_results.csv",
-                  checkpoint="gptV_checkpoint.pkl", max_examples=None,
-                  num_video_frames=32):
-
-    print(f"🔹 Loading dataset: {dataset_name}")
-    dset = load_dataset(dataset_name, split=split, token=True)
-
-    # Filter for video examples only
-    print(f"Filtering dataset for video examples only...")
-    video_indices = [i for i, m in enumerate(dset["media_type"]) if m == "video"]
-    dset = dset.select(video_indices)
-    print(f"✅ Total videos to process: {len(dset)}")
-
-    total = len(dset)
-    if max_examples:
-        total = min(total, max_examples)
-        dset = dset.select(range(total))
-
-    # Load checkpoint
-    processed_indices, results, problematic_indices = load_checkpoint(checkpoint)
-
-    # Simple log file for problematic files
-    problematic_log = os.path.splitext(checkpoint)[0] + '_problematic.log'
-
-    # Statistics
-    correct = sum(1 for r in results if r.get('correct', False))
-    total_processed = len(results)
-    failed_answers = sum(1 for r in results if r.get('model_answer') == 'None')
-
-    # Statistics by question type
-    stats_by_type = {}
-    for r in results:
-        q_type = r.get('question_type')
-        if q_type:
-            if q_type not in stats_by_type:
-                stats_by_type[q_type] = {'correct': 0, 'total': 0}
-            stats_by_type[q_type]['total'] += 1
-            if r.get('correct', False):
-                stats_by_type[q_type]['correct'] += 1
-
-    # Get unprocessed indices
-    unprocessed_indices = [i for i in range(total)
-                          if i not in processed_indices and i not in problematic_indices]
-
-    print(f"\n🚀 Starting GPT-5 Video Benchmark (Fair Comparison)...")
-    print(f"   Model: {MODEL_NAME}")
-    print(f"   Max Output Tokens: {MAX_OUTPUT_TOKENS} (matching gemma.py)")
-    print(f"   Video Frames: {num_video_frames} (matching gemma.py)")
-    print(f"   Total examples: {total}")
-    print(f"   Already processed: {len(processed_indices)}")
-    print(f"   Problematic examples to skip: {len(problematic_indices)}")
-    print(f"   Remaining: {len(unprocessed_indices)}")
-
-    # Process examples one by one
-    for idx in tqdm(unprocessed_indices, desc="Processing videos"):
+def worker_process(args):
+    """Executed in each process."""
+    (worker_id, indices, dataset, out_csv, num_video_frames) = args
+    worker_results = []
+    for idx in tqdm(indices, desc=f"Worker {worker_id}", position=worker_id):
         try:
+            ex = dataset[idx]
             start_time = time.time()
-
-            # Try to access the example
-            try:
-                ex = dset[idx]
-            except Exception as e:
-                error_msg = str(e)
-                print(f"Skipped problematic file at index {idx}: {error_msg}")
-
-                with open(problematic_log, 'a') as log:
-                    log.write(f"{idx}: {error_msg}\n")
-
-                problematic_indices.add(idx)
-                save_checkpoint(checkpoint, processed_indices, results, problematic_indices)
-                continue
-
-            # Run inference
             model_answer, explanation, full_text = run_single_example(ex, num_video_frames=num_video_frames)
             is_correct = evaluate(model_answer, ex["answer"], ex.get("answer_choices"))
-
-            # Update counters
-            if model_answer is None:
-                failed_answers += 1
-            if is_correct:
-                correct += 1
-            total_processed += 1
-
-            # Calculate processing time
             processing_time = time.time() - start_time
 
-            # Update statistics by question type
-            q_type = ex.get('question_type')
-            if q_type not in stats_by_type:
-                stats_by_type[q_type] = {'correct': 0, 'total': 0}
-            stats_by_type[q_type]['total'] += 1
-            if is_correct:
-                stats_by_type[q_type]['correct'] += 1
-
-            # Store result
             res = {
+                "idx": idx,
                 "file_name": ex.get("file_name"),
                 "source_file": ex.get("source_file"),
                 "question": ex.get("question"),
@@ -463,39 +348,149 @@ def run_benchmark(dataset_name, split="test", output_csv="gptV_results.csv",
                 "media_type": ex.get("media_type"),
                 "processing_time": processing_time
             }
-            results.append(res)
-            processed_indices.add(idx)
+            worker_results.append(res)
 
-            # Print timing every 10 examples
-            if len(processed_indices) % 10 == 0:
-                avg_time = sum(r.get("processing_time", 0) for r in results[-10:]) / min(10, len(results))
-                print(f"\n⏱️  Avg time (last 10): {avg_time:.1f}s | Accuracy: {correct}/{total_processed} = {correct/total_processed:.1%}")
-
-            # Save checkpoint periodically
-            if len(processed_indices) % 5 == 0:
-                save_checkpoint(checkpoint, processed_indices, results, problematic_indices)
-                pd.DataFrame(results).to_csv(output_csv, index=False)
+            # Write incremental CSV for this worker
+            if len(worker_results) % 5 == 0:
+                pd.DataFrame(worker_results).to_csv(out_csv, index=False)
 
         except Exception as e:
-            error_msg = str(e)
-            print(f"Skipped problematic file at index {idx}: {error_msg}")
-
-            with open(problematic_log, 'a') as log:
-                log.write(f"{idx}: {error_msg}\n")
-
-            problematic_indices.add(idx)
-            save_checkpoint(checkpoint, processed_indices, results, problematic_indices)
+            print(f"[Worker {worker_id}] Example {idx} failed: {e}")
             continue
 
+    pd.DataFrame(worker_results).to_csv(out_csv, index=False)
+    return out_csv
+
+
+# -------------------------------------------------------------------
+# MAIN DRIVER
+# -------------------------------------------------------------------
+def run_benchmark(dataset_name, split="test", output_csv="gptV_results.csv",
+                  checkpoint="gptV_checkpoint.pkl", max_examples=None,
+                  num_video_frames=32, num_workers=1):
+
+    print(f"🔹 Loading dataset: {dataset_name}")
+    dset = load_dataset(dataset_name, split=split, token=True)
+
+    # Filter for video examples only
+    print(f"Filtering dataset for video examples only...")
+    video_indices = [i for i, m in enumerate(dset["media_type"]) if m == "video"]
+    dset = dset.select(video_indices)
+    print(f"✅ Total videos to process: {len(dset)}")
+
+    total = len(dset)
+    if max_examples:
+        total = min(total, max_examples)
+        dset = dset.select(range(total))
+
+    # Check for existing results to resume from (CSV-based checkpointing)
+    processed_indices = set()
+    old_results = []
+
+    # Check for final output file
+    if os.path.exists(output_csv):
+        print(f"\n📂 Found existing results file: {output_csv}")
+        old_df = pd.read_csv(output_csv)
+        if "idx" in old_df.columns:
+            processed_indices = set(old_df["idx"].values)
+            old_results = old_df.to_dict('records')
+            print(f"   Loaded {len(processed_indices)} completed examples from {output_csv}")
+
+    # Also check for any worker CSV files from interrupted runs
+    worker_files = []
+    for w in range(100):  # Check up to 100 workers
+        worker_csv = f"gptV_results_worker_{w}.csv"
+        if os.path.exists(worker_csv):
+            worker_files.append(worker_csv)
+
+    if worker_files:
+        print(f"\n📂 Found {len(worker_files)} worker checkpoint files from previous run")
+        for wf in worker_files:
+            try:
+                wf_df = pd.read_csv(wf)
+                if "idx" in wf_df.columns:
+                    new_indices = set(wf_df["idx"].values) - processed_indices
+                    if new_indices:
+                        processed_indices.update(new_indices)
+                        old_results.extend(wf_df.to_dict('records'))
+                        print(f"   Loaded {len(new_indices)} additional examples from {wf}")
+            except Exception as e:
+                print(f"   Warning: Could not load {wf}: {e}")
+
+    if processed_indices:
+        print(f"   Total resuming from checkpoint: {len(processed_indices)} examples already processed")
+
+    # Get unprocessed indices
+    all_indices = list(range(total))
+    unprocessed_indices = [i for i in all_indices if i not in processed_indices]
+
+    print(f"\n🚀 Starting GPT-5 Video Benchmark (Fair Comparison)...")
+    print(f"   Model: {MODEL_NAME}")
+    print(f"   Max Output Tokens: {MAX_OUTPUT_TOKENS} (matching gemma.py)")
+    print(f"   Video Frames: {num_video_frames} (matching gemma.py)")
+    print(f"   Total examples: {total}")
+    print(f"   Already processed: {len(processed_indices)}")
+    print(f"   Remaining: {len(unprocessed_indices)}")
+    print(f"   Using {num_workers} workers")
+
+    # If all examples are already processed, skip to results
+    if len(unprocessed_indices) == 0:
+        print("\n✅ All examples already processed!")
+        all_df = pd.DataFrame(old_results)
+    else:
+        # Split unprocessed indices among workers
+        chunks = [unprocessed_indices[i::num_workers] for i in range(num_workers)]
+
+        worker_args = []
+        for w, chunk in enumerate(chunks):
+            if len(chunk) > 0:  # Only create worker if it has work to do
+                worker_csv = f"gptV_results_worker_{w}.csv"
+                worker_args.append((w, chunk, dset, worker_csv, num_video_frames))
+
+        if num_workers > 1 and len(worker_args) > 1:
+            with Pool(processes=len(worker_args)) as pool:
+                worker_csvs = pool.map(worker_process, worker_args)
+        else:
+            worker_csvs = [worker_process(worker_args[0])] if worker_args else []
+
+        # Merge new results with old results
+        new_dfs = [pd.read_csv(f) for f in worker_csvs if os.path.exists(f)]
+        if old_results:
+            all_dfs = [pd.DataFrame(old_results)] + new_dfs
+        else:
+            all_dfs = new_dfs
+
+        all_df = pd.concat(all_dfs, ignore_index=True) if all_dfs else pd.DataFrame()
+
+        # Clean up worker files after successful merge
+        for worker_csv in worker_csvs:
+            try:
+                if os.path.exists(worker_csv):
+                    os.remove(worker_csv)
+            except Exception as e:
+                print(f"   Warning: Could not remove {worker_csv}: {e}")
+
     # Save final results
-    all_df = pd.DataFrame(results)
     all_df.to_csv(output_csv, index=False)
 
-    # Calculate final statistics
+    # Calculate statistics
+    correct = all_df["correct"].sum()
+    total_processed = len(all_df)
     acc = correct / total_processed if total_processed else 0
+    failed_answers = (all_df["model_answer"] == "None").sum()
+
+    # Calculate accuracy by question type
+    stats_by_type = {}
     accuracy_by_type = {}
-    for q_type, stats in stats_by_type.items():
-        accuracy_by_type[q_type] = stats['correct'] / stats['total'] if stats['total'] > 0 else 0
+
+    if "question_type" in all_df.columns:
+        for q_type in all_df["question_type"].unique():
+            if pd.notna(q_type):
+                type_df = all_df[all_df["question_type"] == q_type]
+                type_correct = type_df["correct"].sum()
+                type_total = len(type_df)
+                stats_by_type[q_type] = {'correct': type_correct, 'total': type_total}
+                accuracy_by_type[q_type] = type_correct / type_total if type_total > 0 else 0
 
     print("\n" + "=" * 80)
     print("GPT-5 VIDEO BENCHMARK RESULTS (Fair Comparison)")
@@ -505,7 +500,6 @@ def run_benchmark(dataset_name, split="test", output_csv="gptV_results.csv",
     print(f"Video Frames: {num_video_frames}")
     print(f"Overall Accuracy: {acc:.2%} ({correct}/{total_processed})")
     print(f"Failed to provide valid answer: {failed_answers}/{total_processed} ({failed_answers/total_processed*100:.1f}%)")
-    print(f"Skipped problematic files: {len(problematic_indices)}")
 
     if stats_by_type:
         print(f"\nAccuracy by Question Type:")
@@ -522,7 +516,7 @@ def run_benchmark(dataset_name, split="test", output_csv="gptV_results.csv",
 # CLI
 # -------------------------------------------------------------------
 def main():
-    parser = argparse.ArgumentParser(description="GPT-5 Video Benchmark (Fair Comparison with gemma.py)")
+    parser = argparse.ArgumentParser(description="GPT-5 Video Benchmark (Fair Comparison with gemma.py, Parallel)")
     parser.add_argument("--dataset", type=str, default="JessicaE/OpenSeeSimE-Structural")
     parser.add_argument("--split", type=str, default="test")
     parser.add_argument("--output", type=str, default="gptV_results.csv")
@@ -530,17 +524,20 @@ def main():
     parser.add_argument("--max_examples", type=int, default=0)
     parser.add_argument("--num_frames", type=int, default=32,
                        help="Number of frames to extract from videos (default: 32, matching gemma.py)")
+    parser.add_argument("--num_workers", type=int, default=1,
+                       help="Number of parallel workers (default: 1)")
     args = parser.parse_args()
 
     max_examples = None if args.max_examples <= 0 else args.max_examples
 
     print("\n" + "=" * 80)
-    print("GPT-5 VIDEO BENCHMARK (Fair Comparison)")
+    print("GPT-5 VIDEO BENCHMARK (Fair Comparison - Parallel)")
     print("=" * 80)
     print(f"Model: {MODEL_NAME}")
     print(f"Dataset: {args.dataset}")
     print(f"Video Frames: {args.num_frames} (matching gemma.py baseline)")
     print(f"Max Output Tokens: {MAX_OUTPUT_TOKENS} (matching gemma.py baseline)")
+    print(f"Workers: {args.num_workers}")
     print(f"Output File: {args.output}")
     print(f"Checkpoint File: {args.checkpoint}")
     print("=" * 80 + "\n")
@@ -552,6 +549,7 @@ def main():
         checkpoint=args.checkpoint,
         max_examples=max_examples,
         num_video_frames=args.num_frames,
+        num_workers=max(1, args.num_workers),
     )
 
 
